@@ -1,0 +1,33 @@
+mocks:
+  # Chat completions - Azure OpenAI success response
+  - name: "Chat Completions - Azure"
+    priority: 10
+    request:
+      uri_regex: "^/openai/deployments/.*/chat/completions.*$"
+      method: "POST"
+    response:
+      status_code: 200
+      headers:
+        Content-Type: "application/json"
+      body: |
+        {
+          "id": "chatcmpl-azure-123",
+          "object": "chat.completion",
+          "created": 1704067200,
+          "model": "gpt-4",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "Hello! I'm a mocked Azure OpenAI response for integration testing."
+              },
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 15,
+            "total_tokens": 25
+          }
+        }

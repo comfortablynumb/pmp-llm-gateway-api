@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PMP LLM Gateway - Admin</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="/css/custom.css">
+</head>
+<body class="bg-gray-100">
+    <!-- Auth Modal -->
+    <div id="auth-modal" class="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center">
+        <div class="bg-white rounded-lg shadow-xl p-8 w-full max-w-md">
+            <h2 class="text-2xl font-bold mb-6 text-gray-800">Admin Login</h2>
+            <form id="login-form">
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">API Key</label>
+                    <input type="password" id="api-key-input"
+                        class="w-full border border-gray-300 rounded-lg px-4 py-2 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        placeholder="Enter your admin API key" required>
+                </div>
+                <div id="login-error" class="hidden text-red-600 text-sm mb-4"></div>
+                <button type="submit"
+                    class="w-full bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700 transition-colors">
+                    Login
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Main App Container -->
+    <div id="app" class="hidden flex h-screen">
+        <!-- Sidebar -->
+        <aside class="w-64 bg-gray-800 text-white flex flex-col">
+            <div class="p-4 border-b border-gray-700">
+                <h1 class="text-xl font-bold">PMP LLM Gateway</h1>
+                <p class="text-xs text-gray-400 mt-1">Admin Console</p>
+            </div>
+            <nav class="flex-1 py-4">
+                <a href="#dashboard" class="nav-item flex items-center px-4 py-3 hover:bg-gray-700 cursor-pointer" data-route="dashboard">
+                    <span class="mr-3">&#9632;</span> Dashboard
+                </a>
+                <div class="border-t border-gray-700 my-2"></div>
+                <a href="#models" class="nav-item flex items-center px-4 py-3 hover:bg-gray-700 cursor-pointer" data-route="models">
+                    <span class="mr-3">&#9679;</span> Models
+                </a>
+                <a href="#prompts" class="nav-item flex items-center px-4 py-3 hover:bg-gray-700 cursor-pointer" data-route="prompts">
+                    <span class="mr-3">&#9998;</span> Prompts
+                </a>
+                <a href="#workflows" class="nav-item flex items-center px-4 py-3 hover:bg-gray-700 cursor-pointer" data-route="workflows">
+                    <span class="mr-3">&#8644;</span> Workflows
+                </a>
+                <a href="#api-keys" class="nav-item flex items-center px-4 py-3 hover:bg-gray-700 cursor-pointer" data-route="api-keys">
+                    <span class="mr-3">&#128273;</span> API Keys
+                </a>
+                <div class="border-t border-gray-700 my-2"></div>
+                <a href="#credentials" class="nav-item flex items-center px-4 py-3 hover:bg-gray-700 cursor-pointer" data-route="credentials">
+                    <span class="mr-3">&#128274;</span> Credentials
+                </a>
+            </nav>
+            <div class="p-4 border-t border-gray-700">
+                <button id="logout-btn" class="w-full text-left px-4 py-2 text-gray-400 hover:text-white hover:bg-gray-700 rounded">
+                    Logout
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="flex-1 flex flex-col overflow-hidden">
+            <!-- Header -->
+            <header class="bg-white shadow-sm h-16 flex items-center px-6">
+                <h2 id="page-title" class="text-xl font-semibold text-gray-800">Dashboard</h2>
+            </header>
+
+            <!-- Content Area -->
+            <div id="content" class="flex-1 overflow-auto p-6">
+                <!-- Dynamic content loaded here -->
+            </div>
+        </main>
+    </div>
+
+    <!-- Toast Container -->
+    <div id="toast-container" class="fixed bottom-4 right-4 z-50"></div>
+
+    <!-- Scripts -->
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="/js/utils.js"></script>
+    <script src="/js/api.js"></script>
+    <script src="/js/auth.js"></script>
+    <script src="/js/views/dashboard.js"></script>
+    <script src="/js/views/models.js"></script>
+    <script src="/js/views/prompts.js"></script>
+    <script src="/js/views/api-keys.js"></script>
+    <script src="/js/views/workflows.js"></script>
+    <script src="/js/views/credentials.js"></script>
+    <script src="/js/app.js"></script>
+</body>
+</html>

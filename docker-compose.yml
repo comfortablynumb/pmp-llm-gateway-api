@@ -1,0 +1,187 @@
+services:
+  # PostgreSQL database
+  postgres:
+    image: postgres:16-alpine
+    container_name: pmp-llm-gateway-postgres
+    environment:
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: gateway_dev
+      POSTGRES_DB: llm_gateway
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway -d llm_gateway"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - full
+      - postgres
+      - test
+
+  # Redis cache
+  redis:
+    image: redis:7-alpine
+    container_name: pmp-llm-gateway-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - full
+      - redis
+
+  # pgvector for embeddings
+  pgvector:
+    image: pgvector/pgvector:pg16
+    container_name: pmp-llm-gateway-pgvector
+    environment:
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: gateway_dev
+      POSTGRES_DB: knowledge_base
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgvector_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway -d knowledge_base"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - full
+      - pgvector
+
+  # ============================================
+  # Integration Test Services (test profile)
+  # ============================================
+
+  # Mock OpenAI API
+  mock-openai:
+    image: ironedge/pmp-mock-http:v0.4.0
+    container_name: pmp-mock-openai
+    volumes:
+      - ./tests/integration/mocks/openai:/mocks:ro
+    environment:
+      PORT: "8080"
+      HEALTH_PORT: "8083"
+      UI_PORT: "8081"
+      MANAGEMENT_PORT: "8082"
+      MOCKS_DIR: "/mocks"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8083/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    profiles:
+      - test
+
+  # Mock Anthropic API
+  mock-anthropic:
+    image: ironedge/pmp-mock-http:v0.4.0
+    container_name: pmp-mock-anthropic
+    volumes:
+      - ./tests/integration/mocks/anthropic:/mocks:ro
+    environment:
+      PORT: "8080"
+      HEALTH_PORT: "8083"
+      UI_PORT: "8081"
+      MANAGEMENT_PORT: "8082"
+      MOCKS_DIR: "/mocks"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8083/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    profiles:
+      - test
+
+  # Mock Azure OpenAI API
+  mock-azure-openai:
+    image: ironedge/pmp-mock-http:v0.4.0
+    container_name: pmp-mock-azure-openai
+    volumes:
+      - ./tests/integration/mocks/azure-openai:/mocks:ro
+    environment:
+      PORT: "8080"
+      HEALTH_PORT: "8083"
+      UI_PORT: "8081"
+      MANAGEMENT_PORT: "8082"
+      MOCKS_DIR: "/mocks"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8083/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    profiles:
+      - test
+
+  # LLM Gateway API (test build)
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pmp-llm-gateway-app
+    environment:
+      RUST_LOG: "info"
+      RUST_MIN_STACK: "16777216"
+      APP__SERVER__HOST: "0.0.0.0"
+      APP__SERVER__PORT: "8080"
+      # LLM provider configuration for testing
+      LLM_PROVIDER: "openai"
+      OPENAI_API_KEY: "test-openai-key"
+      OPENAI_BASE_URL: "http://mock-openai:8080"
+      ANTHROPIC_API_KEY: "test-anthropic-key"
+      ANTHROPIC_BASE_URL: "http://mock-anthropic:8080"
+      AZURE_OPENAI_API_KEY: "test-azure-key"
+      AZURE_OPENAI_ENDPOINT: "http://mock-azure-openai:8080"
+      # Admin API key for testing
+      ADMIN_API_KEY: "test-admin-key-12345678901234567890"
+    ports:
+      - "8080:8080"
+    depends_on:
+      mock-openai:
+        condition: service_healthy
+      mock-anthropic:
+        condition: service_healthy
+      mock-azure-openai:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    profiles:
+      - test
+
+  # Hurl test runner
+  hurl:
+    image: ghcr.io/orange-opensource/hurl:latest
+    container_name: pmp-hurl-runner
+    working_dir: /tests
+    volumes:
+      - ./tests/integration/hurl:/tests:ro
+    environment:
+      HURL_app_url: "http://app:8080"
+      HURL_admin_api_key: "test-admin-key-12345678901234567890"
+    depends_on:
+      app:
+        condition: service_healthy
+    profiles:
+      - test
+    command: ["--glob", "**/*.hurl", "--test", "--color", "--very-verbose", "--jobs", "1"]
+
+volumes:
+  postgres_data:
+  redis_data:
+  pgvector_data:

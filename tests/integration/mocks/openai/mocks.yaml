@@ -1,0 +1,33 @@
+mocks:
+  # Chat completions - success response
+  - name: "Chat Completions"
+    priority: 10
+    request:
+      uri: "/v1/chat/completions"
+      method: "POST"
+    response:
+      status_code: 200
+      headers:
+        Content-Type: "application/json"
+      body: |
+        {
+          "id": "chatcmpl-test-123",
+          "object": "chat.completion",
+          "created": 1704067200,
+          "model": "gpt-4",
+          "choices": [
+            {
+              "index": 0,
+              "message": {
+                "role": "assistant",
+                "content": "Hello! I'm a mocked GPT-4 response for integration testing."
+              },
+              "finish_reason": "stop"
+            }
+          ],
+          "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 15,
+            "total_tokens": 25
+          }
+        }
