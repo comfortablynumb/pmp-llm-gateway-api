@@ -23,6 +23,7 @@ logs/
 
 # Claude
 /.claude
+/tmpclaude-*
 
 # Other
 /nul

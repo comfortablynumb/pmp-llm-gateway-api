@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::validation::{validate_model_id, ModelValidationError};
+use crate::domain::storage::{StorageEntity, StorageKey};
 use crate::domain::CredentialType;
 
 /// Model identifier - alphanumeric + hyphens, max 50 characters
@@ -45,6 +46,12 @@ impl std::fmt::Display for ModelId {
     }
 }
 
+impl StorageKey for ModelId {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Model configuration parameters
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelConfig {
@@ -75,6 +82,22 @@ pub struct ModelConfig {
     /// System prompt template
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
+
+    /// Request timeout in milliseconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+
+    /// Maximum number of retries on failure (0-10)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_retries: Option<u32>,
+
+    /// Delay between retries in milliseconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_delay_ms: Option<u64>,
+
+    /// Fallback model ID to use if this model fails
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_model_id: Option<String>,
 }
 
 impl Default for ModelConfig {
@@ -87,6 +110,10 @@ impl Default for ModelConfig {
             presence_penalty: None,
             frequency_penalty: None,
             system_prompt: None,
+            timeout_ms: None,
+            max_retries: None,
+            retry_delay_ms: None,
+            fallback_model_id: None,
         }
     }
 }
@@ -130,6 +157,26 @@ impl ModelConfig {
         self.system_prompt = Some(prompt.into());
         self
     }
+
+    pub fn with_timeout_ms(mut self, timeout_ms: u64) -> Self {
+        self.timeout_ms = Some(timeout_ms);
+        self
+    }
+
+    pub fn with_max_retries(mut self, max_retries: u32) -> Self {
+        self.max_retries = Some(max_retries);
+        self
+    }
+
+    pub fn with_retry_delay_ms(mut self, retry_delay_ms: u64) -> Self {
+        self.retry_delay_ms = Some(retry_delay_ms);
+        self
+    }
+
+    pub fn with_fallback_model_id(mut self, fallback_model_id: impl Into<String>) -> Self {
+        self.fallback_model_id = Some(fallback_model_id.into());
+        self
+    }
 }
 
 /// Model entity representing a configured LLM model
@@ -150,6 +197,9 @@ pub struct Model {
 
     /// Provider-specific model name (e.g., "gpt-4o", "claude-3-5-sonnet-20241022")
     provider_model: String,
+
+    /// Reference to a stored credential (must match provider type)
+    credential_id: String,
 
     /// Model configuration parameters
     config: ModelConfig,
@@ -174,6 +224,7 @@ impl Model {
         name: impl Into<String>,
         provider: CredentialType,
         provider_model: impl Into<String>,
+        credential_id: impl Into<String>,
     ) -> Self {
         let now = Utc::now();
         Self {
@@ -182,6 +233,7 @@ impl Model {
             description: None,
             provider,
             provider_model: provider_model.into(),
+            credential_id: credential_id.into(),
             config: ModelConfig::default(),
             version: 1,
             enabled: true,
@@ -230,6 +282,10 @@ impl Model {
         &self.provider_model
     }
 
+    pub fn credential_id(&self) -> &str {
+        &self.credential_id
+    }
+
     pub fn config(&self) -> &ModelConfig {
         &self.config
     }
@@ -270,6 +326,12 @@ impl Model {
         self.touch();
     }
 
+    /// Update the credential reference
+    pub fn set_credential_id(&mut self, credential_id: impl Into<String>) {
+        self.credential_id = credential_id.into();
+        self.touch();
+    }
+
     /// Update the configuration (increments version)
     pub fn set_config(&mut self, config: ModelConfig) {
         self.config = config;
@@ -286,6 +348,14 @@ impl Model {
     /// Update the updated_at timestamp
     fn touch(&mut self) {
         self.updated_at = Utc::now();
+    }
+}
+
+impl StorageEntity for Model {
+    type Key = ModelId;
+
+    fn key(&self) -> &Self::Key {
+        &self.id
     }
 }
 
@@ -326,6 +396,7 @@ mod tests {
             "GPT-4 Production",
             CredentialType::OpenAi,
             "gpt-4o",
+            "openai-prod",
         )
         .with_description("Production GPT-4 model")
         .with_config(ModelConfig::new().with_temperature(0.7).with_max_tokens(4096));
@@ -335,6 +406,7 @@ mod tests {
         assert_eq!(model.description(), Some("Production GPT-4 model"));
         assert_eq!(model.provider(), &CredentialType::OpenAi);
         assert_eq!(model.provider_model(), "gpt-4o");
+        assert_eq!(model.credential_id(), "openai-prod");
         assert_eq!(model.config().temperature, Some(0.7));
         assert_eq!(model.config().max_tokens, Some(4096));
         assert_eq!(model.version(), 1);
@@ -344,7 +416,7 @@ mod tests {
     #[test]
     fn test_model_config_update_increments_version() {
         let id = ModelId::new("test-model").unwrap();
-        let mut model = Model::new(id, "Test", CredentialType::OpenAi, "gpt-4");
+        let mut model = Model::new(id, "Test", CredentialType::OpenAi, "gpt-4", "openai-cred");
 
         assert_eq!(model.version(), 1);
 

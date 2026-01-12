@@ -1,10 +1,38 @@
 use serde::Deserialize;
 
+use crate::infrastructure::observability::ObservabilityConfig;
+
 /// Application configuration
 #[derive(Debug, Clone, Deserialize)]
 pub struct AppConfig {
     pub server: ServerConfig,
     pub logging: LoggingConfig,
+    #[serde(default)]
+    pub auth: AuthConfig,
+    #[serde(default)]
+    pub observability: ObservabilityConfig,
+    #[serde(default)]
+    pub storage: StorageConfig,
+}
+
+/// Storage backend configuration
+#[derive(Debug, Clone, Deserialize)]
+pub struct StorageConfig {
+    /// Storage backend type: "memory" or "postgres"
+    #[serde(default = "default_storage_backend")]
+    pub backend: String,
+}
+
+fn default_storage_backend() -> String {
+    "postgres".to_string()
+}
+
+impl Default for StorageConfig {
+    fn default() -> Self {
+        Self {
+            backend: default_storage_backend(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -27,11 +55,38 @@ pub enum LogFormat {
     Json,
 }
 
+/// Authentication configuration
+#[derive(Debug, Clone, Deserialize)]
+pub struct AuthConfig {
+    /// JWT secret key (generated if not provided)
+    #[serde(default)]
+    pub jwt_secret: Option<String>,
+    /// JWT token expiration in hours
+    #[serde(default = "default_jwt_expiration_hours")]
+    pub jwt_expiration_hours: u32,
+}
+
+fn default_jwt_expiration_hours() -> u32 {
+    24
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            jwt_secret: None,
+            jwt_expiration_hours: 24,
+        }
+    }
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
             server: ServerConfig::default(),
             logging: LoggingConfig::default(),
+            auth: AuthConfig::default(),
+            observability: ObservabilityConfig::default(),
+            storage: StorageConfig::default(),
         }
     }
 }

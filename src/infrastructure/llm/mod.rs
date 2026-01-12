@@ -13,3 +13,6 @@ pub use bedrock::{BedrockClient, BedrockClientTrait, BedrockProvider};
 pub use factory::{LlmProviderConfig, LlmProviderFactory};
 pub use http_client::{HttpClient, HttpClientTrait};
 pub use openai::OpenAiProvider;
+
+#[cfg(test)]
+pub use http_client::mock::MockHttpClient;

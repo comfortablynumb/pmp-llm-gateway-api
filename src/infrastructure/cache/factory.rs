@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::domain::cache::{Cache, CacheExt};
+use crate::domain::cache::Cache;
 use crate::domain::DomainError;
 
 use super::in_memory::{InMemoryCache, InMemoryCacheConfig};
@@ -226,6 +226,7 @@ impl CacheFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::cache::CacheExt;
 
     #[test]
     fn test_cache_type_from_str() {

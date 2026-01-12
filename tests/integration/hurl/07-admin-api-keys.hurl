@@ -15,6 +15,7 @@ Authorization: Bearer pk_test_{{admin_api_key}}
 Content-Type: application/json
 {
     "name": "Test Read-Only Key",
+    "team_id": "administrators",
     "permissions": {
         "admin": false,
         "models": "all",

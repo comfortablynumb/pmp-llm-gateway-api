@@ -1,3 +1,33 @@
+/* Base font size */
+html {
+    font-size: 15px;
+}
+
+body {
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+/* Headings */
+h1, .text-xl {
+    font-size: 1.3rem !important;
+}
+
+h2, .text-lg {
+    font-size: 1.15rem !important;
+}
+
+h3 {
+    font-size: 1.05rem !important;
+}
+
+/* Sidebar */
+.nav-item {
+    font-size: 0.85rem;
+    padding-top: 0.5rem !important;
+    padding-bottom: 0.5rem !important;
+}
+
 /* Custom scrollbar */
 ::-webkit-scrollbar {
     width: 8px;
@@ -117,6 +147,16 @@
     color: #374151;
 }
 
+.badge-blue {
+    background-color: #DBEAFE;
+    color: #1E40AF;
+}
+
+.badge-purple {
+    background-color: #EDE9FE;
+    color: #5B21B6;
+}
+
 /* JSON editor */
 .json-editor {
     font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
@@ -133,9 +173,9 @@
 /* Card component */
 .card {
     background: white;
-    border-radius: 8px;
+    border-radius: 6px;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
-    padding: 24px;
+    padding: 16px;
 }
 
 /* Table styles */
@@ -156,8 +196,9 @@
 }
 
 .data-table td {
-    padding: 16px;
+    padding: 10px 16px;
     border-bottom: 1px solid #E5E7EB;
+    font-size: 0.85rem;
 }
 
 .data-table tr:hover {
@@ -166,9 +207,10 @@
 
 /* Button styles */
 .btn {
-    padding: 8px 16px;
-    border-radius: 6px;
+    padding: 6px 12px;
+    border-radius: 4px;
     font-weight: 500;
+    font-size: 0.85rem;
     cursor: pointer;
     transition: all 0.2s;
 }
@@ -200,13 +242,69 @@
     background: #DC2626;
 }
 
+/* Small action buttons for tables */
+.btn-sm {
+    padding: 3px 8px;
+    border-radius: 3px;
+    font-weight: 500;
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: all 0.2s;
+    border: none;
+}
+
+.btn-edit {
+    background: #DBEAFE;
+    color: #1D4ED8;
+}
+
+.btn-edit:hover {
+    background: #BFDBFE;
+}
+
+.btn-delete {
+    background: #FEE2E2;
+    color: #DC2626;
+}
+
+.btn-delete:hover {
+    background: #FECACA;
+}
+
+.btn-success-sm {
+    background: #D1FAE5;
+    color: #047857;
+}
+
+.btn-success-sm:hover {
+    background: #A7F3D0;
+}
+
+.btn-warning-sm {
+    background: #FEF3C7;
+    color: #B45309;
+}
+
+.btn-warning-sm:hover {
+    background: #FDE68A;
+}
+
+.btn-gray-sm {
+    background: #F3F4F6;
+    color: #374151;
+}
+
+.btn-gray-sm:hover {
+    background: #E5E7EB;
+}
+
 /* Form inputs */
 .form-input {
     width: 100%;
     border: 1px solid #D1D5DB;
-    border-radius: 6px;
-    padding: 8px 12px;
-    font-size: 0.875rem;
+    border-radius: 4px;
+    padding: 6px 10px;
+    font-size: 0.85rem;
 }
 
 .form-input:focus {
@@ -241,4 +339,71 @@
     width: 90%;
     max-height: 90vh;
     overflow-y: auto;
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 20px;
+    border-bottom: 1px solid #E5E7EB;
+}
+
+.modal-body {
+    padding: 20px;
+}
+
+.modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 16px 20px;
+    border-top: 1px solid #E5E7EB;
+    background: #F9FAFB;
+}
+
+/* Workflow node graph */
+.workflow-graph {
+    padding: 16px;
+}
+
+.node-start, .node-end {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 60px;
+    height: 32px;
+    border-radius: 16px;
+    background: #E5E7EB;
+    color: #374151;
+}
+
+.node-start {
+    background: #D1FAE5;
+    color: #047857;
+}
+
+.node-end {
+    background: #FEE2E2;
+    color: #991B1B;
+}
+
+.node-connector {
+    width: 40px;
+    height: 2px;
+    background: #D1D5DB;
+    margin: 0 8px;
+}
+
+.node-step {
+    flex: 1;
+    max-width: 300px;
+    padding: 12px 16px;
+    border: 2px solid;
+    border-radius: 8px;
+    transition: all 0.2s;
+}
+
+.node-step:hover {
+    transform: translateY(-2px);
 }

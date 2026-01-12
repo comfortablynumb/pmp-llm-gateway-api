@@ -7,8 +7,17 @@ const App = (function() {
         'models': Models,
         'prompts': Prompts,
         'api-keys': ApiKeys,
+        'teams': Teams,
         'workflows': Workflows,
-        'credentials': Credentials
+        'credentials': Credentials,
+        'external-apis': ExternalApisView,
+        'knowledge-bases': KnowledgeBases,
+        'experiments': Experiments,
+        'test-cases': TestCases,
+        'budgets': Budgets,
+        'webhooks': Webhooks,
+        'configuration': Configuration,
+        'execution-logs': ExecutionLogs
     };
 
     const titles = {
@@ -16,8 +25,17 @@ const App = (function() {
         'models': 'Models',
         'prompts': 'Prompts',
         'api-keys': 'API Keys',
+        'teams': 'Teams',
         'workflows': 'Workflows',
-        'credentials': 'Credentials'
+        'credentials': 'Credentials',
+        'external-apis': 'External APIs',
+        'knowledge-bases': 'Knowledge Bases',
+        'experiments': 'Experiments (A/B Testing)',
+        'test-cases': 'Test Cases',
+        'budgets': 'Budgets',
+        'webhooks': 'Webhooks',
+        'configuration': 'Configuration',
+        'execution-logs': 'Execution Logs'
     };
 
     let currentView = null;
@@ -69,8 +87,7 @@ const App = (function() {
 
         // Setup logout
         $('#logout-btn').on('click', function() {
-            Auth.clearApiKey();
-            Auth.showLoginModal();
+            Auth.logout();
         });
 
         // Initial navigation if authenticated

@@ -4,6 +4,32 @@ use serde::{Deserialize, Serialize};
 
 use super::Message;
 
+/// Response format for structured outputs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum LlmResponseFormat {
+    /// Return plain text (default)
+    Text,
+    /// Return JSON object (model chooses structure)
+    JsonObject,
+    /// Return JSON matching a specific schema
+    JsonSchema {
+        json_schema: LlmJsonSchema,
+    },
+}
+
+/// JSON Schema specification for structured outputs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmJsonSchema {
+    /// Name of the schema
+    pub name: String,
+    /// Whether to enforce strict mode
+    #[serde(default)]
+    pub strict: bool,
+    /// The JSON schema definition
+    pub schema: serde_json::Value,
+}
+
 /// Parameters for LLM generation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmRequest {
@@ -26,6 +52,9 @@ pub struct LlmRequest {
     pub presence_penalty: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frequency_penalty: Option<f32>,
+    /// Response format for structured outputs
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<LlmResponseFormat>,
     #[serde(default)]
     pub stream: bool,
 }
@@ -42,6 +71,7 @@ impl LlmRequest {
             stop: None,
             presence_penalty: None,
             frequency_penalty: None,
+            response_format: None,
             stream: false,
         }
     }
@@ -68,6 +98,7 @@ pub struct LlmRequestBuilder {
     stop: Option<Vec<String>>,
     presence_penalty: Option<f32>,
     frequency_penalty: Option<f32>,
+    response_format: Option<LlmResponseFormat>,
     stream: bool,
 }
 
@@ -153,6 +184,22 @@ impl LlmRequestBuilder {
         self
     }
 
+    pub fn response_format(mut self, format: LlmResponseFormat) -> Self {
+        self.response_format = Some(format);
+        self
+    }
+
+    pub fn json_schema(mut self, name: impl Into<String>, schema: serde_json::Value, strict: bool) -> Self {
+        self.response_format = Some(LlmResponseFormat::JsonSchema {
+            json_schema: LlmJsonSchema {
+                name: name.into(),
+                strict,
+                schema,
+            },
+        });
+        self
+    }
+
     pub fn build(self) -> LlmRequest {
         LlmRequest {
             messages: self.messages,
@@ -164,6 +211,7 @@ impl LlmRequestBuilder {
             stop: self.stop,
             presence_penalty: self.presence_penalty,
             frequency_penalty: self.frequency_penalty,
+            response_format: self.response_format,
             stream: self.stream,
         }
     }

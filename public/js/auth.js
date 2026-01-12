@@ -1,29 +1,47 @@
 /**
- * Authentication handling
+ * Authentication handling with JWT tokens
  */
 const Auth = (function() {
-    const STORAGE_KEY = 'pmp_admin_api_key';
+    const TOKEN_KEY = 'pmp_admin_token';
+    const USER_KEY = 'pmp_admin_user';
 
-    function getApiKey() {
-        return sessionStorage.getItem(STORAGE_KEY);
+    function getToken() {
+        return sessionStorage.getItem(TOKEN_KEY);
     }
 
-    function setApiKey(key) {
-        sessionStorage.setItem(STORAGE_KEY, key);
+    function setToken(token) {
+        sessionStorage.setItem(TOKEN_KEY, token);
     }
 
-    function clearApiKey() {
-        sessionStorage.removeItem(STORAGE_KEY);
+    function clearToken() {
+        sessionStorage.removeItem(TOKEN_KEY);
+        sessionStorage.removeItem(USER_KEY);
+    }
+
+    function getUser() {
+        const userJson = sessionStorage.getItem(USER_KEY);
+
+        if (!userJson) return null;
+        try {
+            return JSON.parse(userJson);
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function setUser(user) {
+        sessionStorage.setItem(USER_KEY, JSON.stringify(user));
     }
 
     function isAuthenticated() {
-        return !!getApiKey();
+        return !!getToken();
     }
 
     function showLoginModal() {
         $('#auth-modal').removeClass('hidden');
         $('#app').addClass('hidden');
-        $('#api-key-input').val('').focus();
+        $('#username-input').val('').focus();
+        $('#password-input').val('');
         $('#login-error').addClass('hidden');
     }
 
@@ -32,18 +50,50 @@ const Auth = (function() {
         $('#app').removeClass('hidden');
     }
 
-    async function validateAndStore(apiKey) {
-        // Temporarily set key to test it
-        setApiKey(apiKey);
+    async function login(username, password) {
+        const response = await fetch('/auth/login', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ username, password })
+        });
 
+        if (!response.ok) {
+            let errorMessage = 'Login failed';
+            try {
+                const error = await response.json();
+                errorMessage = error.error?.message || error.message || errorMessage;
+            } catch (e) {
+                // Ignore JSON parse errors
+            }
+            throw new Error(errorMessage);
+        }
+
+        const data = await response.json();
+        setToken(data.token);
+        setUser(data.user);
+
+        return data;
+    }
+
+    async function logout() {
         try {
-            // Try to fetch models to validate the key has admin access
-            await API.listModels();
-            hideLoginModal();
-            return true;
+            const token = getToken();
+
+            if (token) {
+                await fetch('/auth/logout', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+            }
         } catch (e) {
-            clearApiKey();
-            return false;
+            // Ignore logout errors
+        } finally {
+            clearToken();
+            showLoginModal();
         }
     }
 
@@ -55,28 +105,30 @@ const Auth = (function() {
         // Handle login form submission
         $('#login-form').on('submit', async function(e) {
             e.preventDefault();
-            const apiKey = $('#api-key-input').val().trim();
+            const username = $('#username-input').val().trim();
+            const password = $('#password-input').val();
 
-            if (!apiKey) {
-                showError('Please enter an API key');
+            if (!username) {
+                showError('Please enter a username');
+                return;
+            }
+
+            if (!password) {
+                showError('Please enter a password');
                 return;
             }
 
             const $btn = $(this).find('button[type="submit"]');
             const originalText = $btn.text();
-            $btn.prop('disabled', true).text('Validating...');
+            $btn.prop('disabled', true).text('Logging in...');
 
             try {
-                const valid = await validateAndStore(apiKey);
-
-                if (!valid) {
-                    showError('Invalid API key or insufficient permissions');
-                } else {
-                    // Trigger initial navigation
-                    App.navigate(window.location.hash.slice(1) || 'dashboard');
-                }
+                await login(username, password);
+                hideLoginModal();
+                // Trigger initial navigation
+                App.navigate(window.location.hash.slice(1) || 'dashboard');
             } catch (e) {
-                showError('Failed to validate API key');
+                showError(e.message || 'Invalid username or password');
             } finally {
                 $btn.prop('disabled', false).text(originalText);
             }
@@ -91,13 +143,15 @@ const Auth = (function() {
     }
 
     return {
-        getApiKey,
-        setApiKey,
-        clearApiKey,
+        getToken,
+        setToken,
+        clearToken,
+        getUser,
         isAuthenticated,
         showLoginModal,
         hideLoginModal,
-        validateAndStore,
+        login,
+        logout,
         init
     };
 })();

@@ -66,6 +66,7 @@ pub mod mock {
         }
 
         /// Set whether operations should fail
+        #[allow(dead_code)]
         pub async fn set_should_fail(&self, fail: bool) {
             *self.should_fail.write().await = fail;
         }
@@ -205,11 +206,12 @@ pub mod mock {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use crate::domain::api_key::ApiKeyPermissions;
+        use crate::domain::team::TeamId;
 
         fn create_test_key(id: &str) -> ApiKey {
             let key_id = ApiKeyId::new(id).unwrap();
-            ApiKey::new(key_id, format!("Test Key {}", id), "hash", "pk_test_")
+            let team_id = TeamId::administrators();
+            ApiKey::new(key_id, format!("Test Key {}", id), "hash", "pk_test_", team_id)
         }
 
         #[tokio::test]

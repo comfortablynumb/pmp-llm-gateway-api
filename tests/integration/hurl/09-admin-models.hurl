@@ -27,7 +27,8 @@ Content-Type: application/json
     "id": "test-model",
     "name": "Test Model",
     "provider": "openai",
-    "provider_model": "gpt-4-test"
+    "provider_model": "gpt-4-test",
+    "credential_id": "openai-default"
 }
 HTTP 200
 [Asserts]

@@ -2,9 +2,10 @@
 
 use std::sync::Arc;
 
+use crate::domain::storage::Storage;
 use crate::domain::{
     validate_model_config, CredentialType, DomainError, Model, ModelConfig, ModelId,
-    ModelRepository, ModelValidationError,
+    ModelValidationError,
 };
 
 /// Request to create a new model
@@ -15,6 +16,7 @@ pub struct CreateModelRequest {
     pub description: Option<String>,
     pub provider: CredentialType,
     pub provider_model: String,
+    pub credential_id: String,
     pub config: Option<ModelConfig>,
     pub enabled: bool,
 }
@@ -25,26 +27,27 @@ pub struct UpdateModelRequest {
     pub name: Option<String>,
     pub description: Option<String>,
     pub provider_model: Option<String>,
+    pub credential_id: Option<String>,
     pub config: Option<ModelConfig>,
     pub enabled: Option<bool>,
 }
 
 /// Model service for CRUD operations
 #[derive(Debug)]
-pub struct ModelService<R: ModelRepository> {
-    repository: Arc<R>,
+pub struct ModelService<S: Storage<Model>> {
+    storage: Arc<S>,
 }
 
-impl<R: ModelRepository> ModelService<R> {
-    /// Create a new ModelService with the given repository
-    pub fn new(repository: Arc<R>) -> Self {
-        Self { repository }
+impl<S: Storage<Model>> ModelService<S> {
+    /// Create a new ModelService with the given storage
+    pub fn new(storage: Arc<S>) -> Self {
+        Self { storage }
     }
 
     /// Get a model by ID
     pub async fn get(&self, id: &str) -> Result<Option<Model>, DomainError> {
         let model_id = self.parse_model_id(id)?;
-        self.repository.get(&model_id).await
+        self.storage.get(&model_id).await
     }
 
     /// Get a model by ID, returning an error if not found
@@ -56,12 +59,13 @@ impl<R: ModelRepository> ModelService<R> {
 
     /// List all models
     pub async fn list(&self) -> Result<Vec<Model>, DomainError> {
-        self.repository.list().await
+        self.storage.list().await
     }
 
     /// List all enabled models
     pub async fn list_enabled(&self) -> Result<Vec<Model>, DomainError> {
-        self.repository.list_enabled().await
+        let models = self.storage.list().await?;
+        Ok(models.into_iter().filter(|m| m.is_enabled()).collect())
     }
 
     /// Create a new model
@@ -69,7 +73,7 @@ impl<R: ModelRepository> ModelService<R> {
         let model_id = self.parse_model_id(&request.id)?;
 
         // Check for duplicate
-        if self.repository.exists(&model_id).await? {
+        if self.storage.exists(&model_id).await? {
             return Err(DomainError::conflict(format!(
                 "Model with ID '{}' already exists",
                 request.id
@@ -87,6 +91,7 @@ impl<R: ModelRepository> ModelService<R> {
             request.name,
             request.provider,
             request.provider_model,
+            request.credential_id,
         );
 
         if let Some(description) = request.description {
@@ -99,7 +104,7 @@ impl<R: ModelRepository> ModelService<R> {
 
         model = model.with_enabled(request.enabled);
 
-        self.repository.create(model).await
+        self.storage.create(model).await
     }
 
     /// Update an existing model
@@ -112,7 +117,7 @@ impl<R: ModelRepository> ModelService<R> {
 
         // Get existing model
         let mut model = self
-            .repository
+            .storage
             .get(&model_id)
             .await?
             .ok_or_else(|| DomainError::not_found(format!("Model '{}' not found", id)))?;
@@ -130,6 +135,10 @@ impl<R: ModelRepository> ModelService<R> {
             model.set_provider_model(provider_model);
         }
 
+        if let Some(credential_id) = request.credential_id {
+            model.set_credential_id(credential_id);
+        }
+
         if let Some(config) = request.config {
             self.validate_config(&config)?;
             model.set_config(config);
@@ -139,13 +148,13 @@ impl<R: ModelRepository> ModelService<R> {
             model.set_enabled(enabled);
         }
 
-        self.repository.update(model).await
+        self.storage.update(model).await
     }
 
     /// Delete a model by ID
     pub async fn delete(&self, id: &str) -> Result<bool, DomainError> {
         let model_id = self.parse_model_id(id)?;
-        self.repository.delete(&model_id).await
+        self.storage.delete(&model_id).await
     }
 
     /// Enable a model
@@ -154,6 +163,7 @@ impl<R: ModelRepository> ModelService<R> {
             name: None,
             description: None,
             provider_model: None,
+            credential_id: None,
             config: None,
             enabled: Some(true),
         })
@@ -166,6 +176,7 @@ impl<R: ModelRepository> ModelService<R> {
             name: None,
             description: None,
             provider_model: None,
+            credential_id: None,
             config: None,
             enabled: Some(false),
         })
@@ -191,10 +202,10 @@ impl<R: ModelRepository> ModelService<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::model::mock::MockModelRepository;
+    use crate::domain::storage::mock::MockStorage;
 
-    fn create_service() -> ModelService<MockModelRepository> {
-        ModelService::new(Arc::new(MockModelRepository::new()))
+    fn create_service() -> ModelService<MockStorage<Model>> {
+        ModelService::new(Arc::new(MockStorage::new()))
     }
 
     fn create_request(id: &str) -> CreateModelRequest {
@@ -204,6 +215,7 @@ mod tests {
             description: Some("A test model".to_string()),
             provider: CredentialType::OpenAi,
             provider_model: "gpt-4o".to_string(),
+            credential_id: "openai-cred".to_string(),
             config: Some(ModelConfig::new().with_temperature(0.7)),
             enabled: true,
         }
@@ -243,6 +255,7 @@ mod tests {
             description: None,
             provider: CredentialType::OpenAi,
             provider_model: "gpt-4".to_string(),
+            credential_id: "openai-cred".to_string(),
             config: None,
             enabled: true,
         };
@@ -260,6 +273,7 @@ mod tests {
             description: None,
             provider: CredentialType::OpenAi,
             provider_model: "gpt-4".to_string(),
+            credential_id: "openai-cred".to_string(),
             config: Some(ModelConfig::new().with_temperature(5.0)), // Invalid temp
             enabled: true,
         };
@@ -305,6 +319,7 @@ mod tests {
             name: Some("Updated Name".to_string()),
             description: None,
             provider_model: Some("gpt-4-turbo".to_string()),
+            credential_id: None,
             config: Some(ModelConfig::new().with_temperature(0.5)),
             enabled: None,
         };
@@ -325,6 +340,7 @@ mod tests {
             name: Some("Updated".to_string()),
             description: None,
             provider_model: None,
+            credential_id: None,
             config: None,
             enabled: None,
         };

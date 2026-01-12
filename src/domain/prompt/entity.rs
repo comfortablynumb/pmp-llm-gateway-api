@@ -3,6 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::domain::storage::{StorageEntity, StorageKey};
 use crate::domain::{validate_model_id, ModelValidationError};
 
 /// Prompt identifier - uses same validation as ModelId
@@ -41,6 +42,12 @@ impl From<PromptId> for String {
 impl std::fmt::Display for PromptId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+impl StorageKey for PromptId {
+    fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
@@ -302,6 +309,14 @@ impl Prompt {
 
     fn touch(&mut self) {
         self.updated_at = Utc::now();
+    }
+}
+
+impl StorageEntity for Prompt {
+    type Key = PromptId;
+
+    fn key(&self) -> &Self::Key {
+        &self.id
     }
 }
 

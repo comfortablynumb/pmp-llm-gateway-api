@@ -1,0 +1,23 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: llm-gateway-prod
+
+namePrefix: prod-
+
+resources:
+  - ../../base
+
+patches:
+  - path: deployment-patch.yaml
+
+configMapGenerator:
+  - name: llm-gateway-config
+    behavior: merge
+    literals:
+      - APP__LOGGING__LEVEL=warn
+      - APP__OBSERVABILITY__TRACING__SAMPLING_RATIO=0.1
+
+images:
+  - name: pmp-llm-gateway
+    newTag: v1.0.0

@@ -41,7 +41,7 @@ impl KnowledgeBaseFactory {
         config: KnowledgeBaseProviderConfig,
     ) -> Result<Arc<dyn KnowledgeBaseProvider>, DomainError> {
         match (kb_type, config) {
-            (KnowledgeBaseType::Pgvector, KnowledgeBaseProviderConfig::Pgvector(cfg)) => {
+            (KnowledgeBaseType::Pgvector, KnowledgeBaseProviderConfig::Pgvector(_cfg)) => {
                 Err(DomainError::knowledge_base(
                     "Pgvector requires an embedding provider. Use create_pgvector() directly."
                         .to_string(),
@@ -97,7 +97,6 @@ impl From<AwsKnowledgeBaseConfig> for KnowledgeBaseProviderConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infrastructure::knowledge_base::pgvector::mock::MockEmbeddingProvider;
 
     #[test]
     fn test_pgvector_config_conversion() {

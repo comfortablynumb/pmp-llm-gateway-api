@@ -1,0 +1,63 @@
+# Plugin Configuration for PMP LLM Gateway API
+#
+# This file configures which LLM provider plugins are enabled and their settings.
+# Copy this file to `plugins.toml` and customize as needed.
+#
+# The gateway will look for plugins.toml in the current working directory.
+# If not found, all providers are enabled by default.
+
+# Global plugin settings
+[settings]
+# Enable/disable the entire plugin system
+# When false, no providers will be available through the plugin router
+enabled = true
+
+# Maximum number of provider instances to cache per credential
+# Higher values use more memory but reduce provider creation overhead
+max_provider_cache_size = 100
+
+# Enable debug logging for plugin operations
+debug_logging = false
+
+# OpenAI provider configuration
+[providers.openai]
+# Enable/disable OpenAI provider
+enabled = true
+
+# Provider-specific settings (optional)
+# These are passed to the plugin during initialization
+[providers.openai.settings]
+# default_model = "gpt-4"
+# timeout_seconds = 30
+
+# Anthropic provider configuration
+[providers.anthropic]
+enabled = true
+
+[providers.anthropic.settings]
+# default_model = "claude-3-opus-20240229"
+# timeout_seconds = 60
+
+# Azure OpenAI provider configuration
+[providers.azure_openai]
+enabled = true
+
+[providers.azure_openai.settings]
+# api_version = "2024-02-15-preview"
+
+# AWS Bedrock provider configuration
+[providers.bedrock]
+enabled = true
+
+[providers.bedrock.settings]
+# region = "us-east-1"
+
+# Custom plugins (future extension)
+# Uncomment and configure to load external plugins
+# [[custom_plugins]]
+# id = "my-custom-provider"
+# path = "/path/to/plugin.wasm"
+# enabled = true
+#
+# [custom_plugins.config]
+# custom_setting = "value"

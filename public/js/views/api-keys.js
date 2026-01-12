@@ -2,12 +2,18 @@
  * API Keys CRUD view
  */
 const ApiKeys = (function() {
+    let teams = [];
+
     async function render() {
         $('#content').html(Utils.renderLoading());
 
         try {
-            const data = await API.listApiKeys();
-            $('#content').html(renderList(data.api_keys || []));
+            const [keysData, teamsData] = await Promise.all([
+                API.listApiKeys(),
+                API.listTeams()
+            ]);
+            teams = teamsData.teams || [];
+            $('#content').html(renderList(keysData.api_keys || []));
             bindListEvents();
         } catch (error) {
             $('#content').html(Utils.renderError(error.message));
@@ -27,6 +33,7 @@ const ApiKeys = (function() {
                         <thead>
                             <tr>
                                 <th>Name</th>
+                                <th>Team</th>
                                 <th>Key Prefix</th>
                                 <th>Status</th>
                                 <th>Permissions</th>
@@ -57,28 +64,31 @@ const ApiKeys = (function() {
         if (key.permissions?.models === 'all') permissions.push('Models');
         if (key.permissions?.prompts === 'all') permissions.push('Prompts');
 
+        const teamName = teams.find(t => t.id === key.team_id)?.name || key.team_id;
+
         return `
             <tr>
                 <td>
                     <div class="font-medium">${Utils.escapeHtml(key.name)}</div>
                     ${key.description ? `<div class="text-xs text-gray-500">${Utils.escapeHtml(key.description)}</div>` : ''}
                 </td>
+                <td class="text-sm">${Utils.escapeHtml(teamName)}</td>
                 <td class="font-mono text-sm">${Utils.escapeHtml(key.key_prefix)}...</td>
                 <td><span class="badge ${statusColors[key.status] || 'badge-gray'}">${key.status}</span></td>
                 <td class="text-sm">${permissions.length > 0 ? permissions.join(', ') : 'None'}</td>
                 <td class="text-sm text-gray-500">${key.last_used_at ? Utils.formatDate(key.last_used_at) : 'Never'}</td>
                 <td>
-                    <div class="flex items-center gap-2">
+                    <div class="flex items-center gap-1">
                         ${key.status === 'active' ? `
-                            <button class="suspend-btn text-yellow-600 hover:text-yellow-800" data-id="${Utils.escapeHtml(key.id)}">Suspend</button>
+                            <button class="suspend-btn btn-sm btn-warning-sm" data-id="${Utils.escapeHtml(key.id)}">Suspend</button>
                         ` : ''}
                         ${key.status === 'suspended' ? `
-                            <button class="activate-btn text-green-600 hover:text-green-800" data-id="${Utils.escapeHtml(key.id)}">Activate</button>
+                            <button class="activate-btn btn-sm btn-success-sm" data-id="${Utils.escapeHtml(key.id)}">Activate</button>
                         ` : ''}
                         ${key.status !== 'revoked' ? `
-                            <button class="revoke-btn text-red-600 hover:text-red-800" data-id="${Utils.escapeHtml(key.id)}">Revoke</button>
+                            <button class="revoke-btn btn-sm btn-delete" data-id="${Utils.escapeHtml(key.id)}">Revoke</button>
                         ` : ''}
-                        <button class="delete-btn text-gray-600 hover:text-gray-800" data-id="${Utils.escapeHtml(key.id)}">Delete</button>
+                        <button class="delete-btn btn-sm btn-gray-sm" data-id="${Utils.escapeHtml(key.id)}">Delete</button>
                     </div>
                 </td>
             </tr>
@@ -86,6 +96,10 @@ const ApiKeys = (function() {
     }
 
     function renderForm() {
+        const teamOptions = teams.map(t =>
+            `<option value="${Utils.escapeHtml(t.id)}">${Utils.escapeHtml(t.name)}</option>`
+        ).join('');
+
         return `
             <div class="max-w-2xl">
                 <div class="flex items-center mb-6">
@@ -97,6 +111,13 @@ const ApiKeys = (function() {
                     <div class="mb-4">
                         <label class="block text-sm font-medium text-gray-700 mb-1">Name</label>
                         <input type="text" name="name" class="form-input" placeholder="My API Key" required>
+                    </div>
+
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Team</label>
+                        <select name="team_id" class="form-input" required>
+                            ${teamOptions}
+                        </select>
                     </div>
 
                     <div class="mb-4">
@@ -264,6 +285,7 @@ const ApiKeys = (function() {
 
             const data = {
                 name: formData.name,
+                team_id: formData.team_id,
                 description: formData.description,
                 permissions: permissions
             };

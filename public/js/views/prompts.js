@@ -50,9 +50,10 @@ const Prompts = (function() {
                 <td class="text-gray-500 text-sm">${Utils.escapeHtml(Utils.truncate(prompt.content, 60))}</td>
                 <td><span class="badge badge-gray">v${prompt.version || 1}</span></td>
                 <td>
-                    <button class="edit-btn text-blue-600 hover:text-blue-800 mr-3" data-id="${Utils.escapeHtml(prompt.id)}">Edit</button>
-                    <button class="preview-btn text-green-600 hover:text-green-800 mr-3" data-id="${Utils.escapeHtml(prompt.id)}">Preview</button>
-                    <button class="delete-btn text-red-600 hover:text-red-800" data-id="${Utils.escapeHtml(prompt.id)}">Delete</button>
+                    <button class="details-btn btn-sm btn-primary mr-2" data-id="${Utils.escapeHtml(prompt.id)}">Details</button>
+                    <button class="edit-btn btn-sm btn-edit mr-2" data-id="${Utils.escapeHtml(prompt.id)}">Edit</button>
+                    <button class="preview-btn btn-sm btn-success-sm mr-2" data-id="${Utils.escapeHtml(prompt.id)}">Preview</button>
+                    <button class="delete-btn btn-sm btn-delete" data-id="${Utils.escapeHtml(prompt.id)}">Delete</button>
                 </td>
             </tr>
         `;
@@ -162,8 +163,111 @@ const Prompts = (function() {
         `;
     }
 
+    function renderDetails(prompt, versions) {
+        const tagsHtml = prompt.tags && prompt.tags.length > 0
+            ? prompt.tags.map(t => `<span class="badge badge-primary mr-1">${Utils.escapeHtml(t)}</span>`).join('')
+            : '<span class="text-gray-400">No tags</span>';
+
+        return `
+            <div class="max-w-4xl">
+                <div class="flex items-center mb-6">
+                    <button id="back-btn" class="mr-4 text-gray-500 hover:text-gray-700">&larr; Back</button>
+                    <h2 class="text-xl font-semibold">Prompt Details: ${Utils.escapeHtml(prompt.name)}</h2>
+                </div>
+
+                <!-- Metadata -->
+                <div class="card mb-6">
+                    <div class="grid grid-cols-2 gap-4">
+                        <div>
+                            <span class="text-sm text-gray-600">ID:</span>
+                            <span class="font-mono ml-2">${Utils.escapeHtml(prompt.id)}</span>
+                        </div>
+                        <div>
+                            <span class="text-sm text-gray-600">Current Version:</span>
+                            <span class="badge badge-success ml-2">v${versions.current_version}</span>
+                        </div>
+                        <div>
+                            <span class="text-sm text-gray-600">Status:</span>
+                            <span class="badge ${prompt.enabled ? 'badge-success' : 'badge-gray'} ml-2">${prompt.enabled ? 'Enabled' : 'Disabled'}</span>
+                        </div>
+                        <div>
+                            <span class="text-sm text-gray-600">Tags:</span>
+                            <span class="ml-2">${tagsHtml}</span>
+                        </div>
+                    </div>
+                    ${prompt.description ? `
+                        <div class="mt-4 pt-4 border-t">
+                            <span class="text-sm text-gray-600">Description:</span>
+                            <p class="mt-1">${Utils.escapeHtml(prompt.description)}</p>
+                        </div>
+                    ` : ''}
+                </div>
+
+                <!-- Current Content -->
+                <div class="card mb-6">
+                    <h3 class="font-medium mb-4">Current Content (v${versions.current_version})</h3>
+                    <pre class="bg-gray-50 p-4 rounded-lg text-sm whitespace-pre-wrap overflow-x-auto">${Utils.escapeHtml(prompt.content)}</pre>
+                </div>
+
+                <!-- Version History -->
+                <div class="card">
+                    <h3 class="font-medium mb-4">Version History</h3>
+                    ${versions.versions.length > 0 ? `
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Version</th>
+                                    <th>Created At</th>
+                                    <th>Message</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${versions.versions.map(v => `
+                                    <tr>
+                                        <td><span class="badge badge-gray">v${v.version}</span></td>
+                                        <td class="text-sm">${Utils.formatDate(v.created_at)}</td>
+                                        <td class="text-sm text-gray-600">${Utils.escapeHtml(v.message || '-')}</td>
+                                        <td>
+                                            <button class="view-version-btn btn-sm btn-edit mr-2"
+                                                data-version="${v.version}"
+                                                data-content="${Utils.escapeHtml(v.content)}">View</button>
+                                            <button class="revert-version-btn btn-sm btn-warning"
+                                                data-version="${v.version}"
+                                                data-prompt-id="${Utils.escapeHtml(prompt.id)}">Revert</button>
+                                        </td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    ` : `
+                        <p class="text-gray-500">No previous versions available. Version history is created when the content is updated.</p>
+                    `}
+                </div>
+            </div>
+
+            <!-- Version Content Modal -->
+            <div id="version-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                <div class="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[80vh] overflow-hidden">
+                    <div class="p-4 border-b flex justify-between items-center">
+                        <h3 class="font-medium" id="version-modal-title">Version Content</h3>
+                        <button id="close-version-modal" class="text-gray-500 hover:text-gray-700">&times;</button>
+                    </div>
+                    <div class="p-4 overflow-y-auto max-h-[60vh]">
+                        <pre id="version-modal-content" class="bg-gray-50 p-4 rounded-lg text-sm whitespace-pre-wrap"></pre>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
     function bindListEvents() {
         $('#create-prompt-btn').on('click', () => showForm());
+
+        $('.details-btn').on('click', function() {
+            const id = $(this).data('id');
+            showDetails(id);
+        });
 
         $('.edit-btn').on('click', function() {
             const id = $(this).data('id');
@@ -212,6 +316,60 @@ const Prompts = (function() {
         }
     }
 
+    async function showDetails(id) {
+        $('#content').html(Utils.renderLoading());
+
+        try {
+            const [prompt, versions] = await Promise.all([
+                API.getPrompt(id),
+                API.listPromptVersions(id)
+            ]);
+            $('#content').html(renderDetails(prompt, versions));
+            bindDetailsEvents(id);
+        } catch (error) {
+            Utils.showToast('Failed to load prompt details', 'error');
+            render();
+        }
+    }
+
+    function bindDetailsEvents(promptId) {
+        $('#back-btn').on('click', () => render());
+
+        // View version content
+        $('.view-version-btn').on('click', function() {
+            const version = $(this).data('version');
+            const content = $(this).data('content');
+            $('#version-modal-title').text(`Version ${version} Content`);
+            $('#version-modal-content').text(content);
+            $('#version-modal').removeClass('hidden');
+        });
+
+        // Close modal
+        $('#close-version-modal, #version-modal').on('click', function(e) {
+            if (e.target === this || e.target.id === 'close-version-modal') {
+                $('#version-modal').addClass('hidden');
+            }
+        });
+
+        // Revert to version
+        $('.revert-version-btn').on('click', async function() {
+            const version = $(this).data('version');
+            const id = $(this).data('prompt-id');
+
+            if (!Utils.confirm(`Are you sure you want to revert to version ${version}? This will create a new version with the old content.`)) {
+                return;
+            }
+
+            try {
+                await API.revertPromptVersion(id, version);
+                Utils.showToast(`Reverted to version ${version}`, 'success');
+                showDetails(id);
+            } catch (error) {
+                Utils.showToast(error.message, 'error');
+            }
+        });
+    }
+
     function bindFormEvents(editId) {
         $('#back-btn, #cancel-btn').on('click', () => render());
 
@@ -250,7 +408,17 @@ const Prompts = (function() {
 
         $('#preview-form').on('submit', async function(e) {
             e.preventDefault();
-            const variables = Utils.getFormData(this);
+
+            // Get variables as strings (don't use getFormData which converts types)
+            const variables = {};
+            $(this).find('input[type="text"]').each(function() {
+                const name = $(this).attr('name');
+                const value = $(this).val();
+
+                if (name && value !== '') {
+                    variables[name] = value;
+                }
+            });
 
             try {
                 const result = await API.renderPrompt(promptId, variables);

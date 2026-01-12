@@ -1,12 +1,11 @@
 @echo off
 setlocal
 
-set PROFILE=%1
+set PROFILE=%~1
 
-if "%PROFILE%"=="" (
-    docker compose rm -f -s -v
-) else (
-    docker compose --profile %PROFILE% rm -f -s -v
-)
+:: Default to "full" profile if none specified
+if "%PROFILE%"=="" set PROFILE=full
+
+docker compose --profile %PROFILE% rm -f -s -v
 
 endlocal

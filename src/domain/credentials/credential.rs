@@ -1,14 +1,23 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// Type of credential (which LLM provider it belongs to)
+/// Type of credential (which LLM provider or service it belongs to)
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialType {
+    // LLM Providers
     OpenAi,
     Anthropic,
     AzureOpenAi,
     AwsBedrock,
+    // Knowledge Base Providers
+    Pgvector,
+    AwsKnowledgeBase,
+    Pinecone,
+    // HTTP API Credential
+    /// API key for external HTTP APIs (used by HTTP Request workflow steps)
+    HttpApiKey,
+    // Custom
     Custom(String),
 }
 
@@ -55,6 +64,10 @@ impl Credential {
         self.additional_params.get(key)
     }
 
+    pub fn additional_params(&self) -> &std::collections::HashMap<String, String> {
+        &self.additional_params
+    }
+
     pub fn expires_at(&self) -> Option<DateTime<Utc>> {
         self.expires_at
     }
@@ -77,6 +90,10 @@ impl std::fmt::Display for CredentialType {
             CredentialType::Anthropic => write!(f, "anthropic"),
             CredentialType::AzureOpenAi => write!(f, "azure_openai"),
             CredentialType::AwsBedrock => write!(f, "aws_bedrock"),
+            CredentialType::Pgvector => write!(f, "pgvector"),
+            CredentialType::AwsKnowledgeBase => write!(f, "aws_knowledge_base"),
+            CredentialType::Pinecone => write!(f, "pinecone"),
+            CredentialType::HttpApiKey => write!(f, "http_api_key"),
             CredentialType::Custom(name) => write!(f, "custom:{}", name),
         }
     }

@@ -142,12 +142,10 @@ async fn handle_async_workflow_execution(
         "Created async workflow execution operation"
     );
 
-    // Spawn background task
+    // Spawn background task - function returns a boxed future to avoid stack overflow
     let op_id = operation_id.clone();
     let input = request.input;
-    tokio::spawn(async move {
-        execute_async_workflow(state, op_id, workflow_id, input).await;
-    });
+    tokio::spawn(execute_async_workflow(state, op_id, workflow_id, input));
 
     // Return 202 Accepted
     Ok((
@@ -158,12 +156,16 @@ async fn handle_async_workflow_execution(
 }
 
 /// Execute workflow in background and update operation status
-async fn execute_async_workflow(
+///
+/// Returns a boxed future to avoid stack overflow from large future sizes
+/// caused by trait object indirection in AppState.
+fn execute_async_workflow(
     state: AppState,
     operation_id: String,
     workflow_id: String,
     input: serde_json::Value,
-) {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+    Box::pin(async move {
     // Mark as running
     if let Err(e) = state.operation_service.mark_running(&operation_id).await {
         warn!(
@@ -248,6 +250,7 @@ async fn execute_async_workflow(
             }
         }
     }
+    })
 }
 
 #[cfg(test)]
@@ -276,6 +279,25 @@ mod tests {
     }
 
     #[test]
+    fn test_execute_request_with_array_input() {
+        let json = r#"{"input": [1, 2, 3]}"#;
+
+        let request: WorkflowExecuteRequest = serde_json::from_str(json).unwrap();
+        assert!(request.input.is_array());
+    }
+
+    #[test]
+    fn test_execute_request_serialization() {
+        let request = WorkflowExecuteRequest {
+            input: json!({"key": "value"}),
+        };
+
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"input\":"));
+        assert!(json.contains("\"key\":\"value\""));
+    }
+
+    #[test]
     fn test_step_summary_serialization() {
         let summary = StepExecutionSummary {
             name: "step1".to_string(),
@@ -288,5 +310,148 @@ mod tests {
         let json = serde_json::to_string(&summary).unwrap();
         assert!(!json.contains("skipped"));
         assert!(!json.contains("error"));
+        assert!(json.contains("\"name\":\"step1\""));
+        assert!(json.contains("\"success\":true"));
+        assert!(json.contains("\"execution_time_ms\":100"));
+    }
+
+    #[test]
+    fn test_step_summary_with_skipped() {
+        let summary = StepExecutionSummary {
+            name: "conditional_step".to_string(),
+            success: true,
+            execution_time_ms: 0,
+            skipped: true,
+            error: None,
+        };
+
+        let json = serde_json::to_string(&summary).unwrap();
+        assert!(json.contains("\"skipped\":true"));
+    }
+
+    #[test]
+    fn test_step_summary_with_error() {
+        let summary = StepExecutionSummary {
+            name: "failed_step".to_string(),
+            success: false,
+            execution_time_ms: 50,
+            skipped: false,
+            error: Some("Connection timeout".to_string()),
+        };
+
+        let json = serde_json::to_string(&summary).unwrap();
+        assert!(json.contains("\"success\":false"));
+        assert!(json.contains("\"error\":\"Connection timeout\""));
+    }
+
+    #[test]
+    fn test_workflow_execute_response_success() {
+        let response = WorkflowExecuteResponse {
+            success: true,
+            output: json!({"result": "success"}),
+            execution_time_ms: 250,
+            steps: vec![
+                StepExecutionSummary {
+                    name: "step1".to_string(),
+                    success: true,
+                    execution_time_ms: 100,
+                    skipped: false,
+                    error: None,
+                },
+                StepExecutionSummary {
+                    name: "step2".to_string(),
+                    success: true,
+                    execution_time_ms: 150,
+                    skipped: false,
+                    error: None,
+                },
+            ],
+            error: None,
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"success\":true"));
+        assert!(json.contains("\"execution_time_ms\":250"));
+        assert!(json.contains("\"steps\":["));
+        assert!(!json.contains("\"error\":"));
+    }
+
+    #[test]
+    fn test_workflow_execute_response_failure() {
+        let response = WorkflowExecuteResponse {
+            success: false,
+            output: json!(null),
+            execution_time_ms: 100,
+            steps: vec![
+                StepExecutionSummary {
+                    name: "step1".to_string(),
+                    success: false,
+                    execution_time_ms: 100,
+                    skipped: false,
+                    error: Some("LLM error".to_string()),
+                },
+            ],
+            error: Some("Workflow failed at step1".to_string()),
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"success\":false"));
+        assert!(json.contains("\"error\":\"Workflow failed at step1\""));
+    }
+
+    #[test]
+    fn test_is_false_function() {
+        assert!(is_false(&false));
+        assert!(!is_false(&true));
+    }
+
+    #[test]
+    fn test_step_execution_summary_from() {
+        let result = StepExecutionResult {
+            step_name: "test_step".to_string(),
+            success: true,
+            output: Some(json!({"data": "test"})),
+            execution_time_ms: 75,
+            skipped: false,
+            error: None,
+        };
+
+        let summary = StepExecutionSummary::from(&result);
+        assert_eq!(summary.name, "test_step");
+        assert!(summary.success);
+        assert_eq!(summary.execution_time_ms, 75);
+        assert!(!summary.skipped);
+        assert!(summary.error.is_none());
+    }
+
+    #[test]
+    fn test_step_execution_summary_from_skipped() {
+        let result = StepExecutionResult {
+            step_name: "skipped_step".to_string(),
+            success: true,
+            output: None,
+            execution_time_ms: 0,
+            skipped: true,
+            error: None,
+        };
+
+        let summary = StepExecutionSummary::from(&result);
+        assert!(summary.skipped);
+    }
+
+    #[test]
+    fn test_step_execution_summary_from_failed() {
+        let result = StepExecutionResult {
+            step_name: "failed_step".to_string(),
+            success: false,
+            output: None,
+            execution_time_ms: 100,
+            skipped: false,
+            error: Some("Error occurred".to_string()),
+        };
+
+        let summary = StepExecutionSummary::from(&result);
+        assert!(!summary.success);
+        assert_eq!(summary.error, Some("Error occurred".to_string()));
     }
 }

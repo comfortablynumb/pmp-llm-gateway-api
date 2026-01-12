@@ -8,6 +8,7 @@ use crate::domain::{
     DomainError, FinishReason, LlmProvider, LlmRequest, LlmResponse, LlmStream, Message,
     MessageRole, StreamChunk, Usage,
 };
+use crate::domain::llm::LlmResponseFormat;
 
 const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com";
 
@@ -15,6 +16,7 @@ const DEFAULT_OPENAI_BASE_URL: &str = "https://api.openai.com";
 #[derive(Debug)]
 pub struct OpenAiProvider<C: HttpClientTrait> {
     client: C,
+    #[allow(dead_code)]
     api_key: String,
     auth_header: String,
     base_url: String,
@@ -81,6 +83,28 @@ impl<C: HttpClientTrait> OpenAiProvider<C> {
 
         if let Some(frequency_penalty) = request.frequency_penalty {
             body["frequency_penalty"] = serde_json::json!(frequency_penalty);
+        }
+
+        // Add response_format for structured outputs
+        if let Some(ref response_format) = request.response_format {
+            match response_format {
+                LlmResponseFormat::Text => {
+                    body["response_format"] = serde_json::json!({"type": "text"});
+                }
+                LlmResponseFormat::JsonObject => {
+                    body["response_format"] = serde_json::json!({"type": "json_object"});
+                }
+                LlmResponseFormat::JsonSchema { json_schema } => {
+                    body["response_format"] = serde_json::json!({
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": json_schema.name,
+                            "strict": json_schema.strict,
+                            "schema": json_schema.schema
+                        }
+                    });
+                }
+            }
         }
 
         body

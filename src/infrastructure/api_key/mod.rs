@@ -7,8 +7,10 @@ mod generator;
 mod rate_limiter;
 mod repository;
 mod service;
+mod storage_repository;
 
 pub use generator::{ApiKeyGenerator, GeneratedApiKey};
 pub use rate_limiter::{RateLimitResult, RateLimiter};
 pub use repository::InMemoryApiKeyRepository;
 pub use service::ApiKeyService;
+pub use storage_repository::StorageApiKeyRepository;

@@ -9,6 +9,7 @@ use tracing::{debug, info, warn};
 use crate::domain::api_key::{
     ApiKey, ApiKeyId, ApiKeyPermissions, ApiKeyRepository, ApiKeyStatus, RateLimitConfig,
 };
+use crate::domain::team::TeamId;
 use crate::domain::DomainError;
 
 use super::generator::ApiKeyGenerator;
@@ -61,15 +62,16 @@ impl<R: ApiKeyRepository> ApiKeyService<R> {
         &self,
         id: ApiKeyId,
         name: impl Into<String>,
+        team_id: TeamId,
         permissions: ApiKeyPermissions,
         rate_limits: Option<RateLimitConfig>,
     ) -> Result<CreateApiKeyResult, DomainError> {
         let name = name.into();
-        info!("Creating API key: id={}, name={}", id, name);
+        info!("Creating API key: id={}, name={}, team={}", id, name, team_id);
 
         let generated = self.generator.generate();
 
-        let api_key = ApiKey::new(id.clone(), &name, &generated.hash, &generated.prefix)
+        let api_key = ApiKey::new(id.clone(), &name, &generated.hash, &generated.prefix, team_id)
             .with_permissions(permissions)
             .with_rate_limits(rate_limits.unwrap_or_default());
 
@@ -91,15 +93,19 @@ impl<R: ApiKeyRepository> ApiKeyService<R> {
         id: ApiKeyId,
         name: impl Into<String>,
         secret: &str,
+        team_id: TeamId,
         permissions: ApiKeyPermissions,
         rate_limits: Option<RateLimitConfig>,
     ) -> Result<CreateApiKeyResult, DomainError> {
         let name = name.into();
-        info!("Creating API key with known secret: id={}, name={}", id, name);
+        info!(
+            "Creating API key with known secret: id={}, name={}, team={}",
+            id, name, team_id
+        );
 
         let generated = self.generator.from_secret(secret);
 
-        let api_key = ApiKey::new(id.clone(), &name, &generated.hash, &generated.prefix)
+        let api_key = ApiKey::new(id.clone(), &name, &generated.hash, &generated.prefix, team_id)
             .with_permissions(permissions)
             .with_rate_limits(rate_limits.unwrap_or_default());
 
@@ -307,12 +313,17 @@ impl<R: ApiKeyRepository> ApiKeyService<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::api_key::{ResourcePermission};
+    use crate::domain::api_key::ResourcePermission;
+    use crate::domain::team::TeamId;
     use crate::infrastructure::api_key::InMemoryApiKeyRepository;
 
     fn create_service() -> ApiKeyService<InMemoryApiKeyRepository> {
         let repo = Arc::new(InMemoryApiKeyRepository::new());
         ApiKeyService::new(repo).with_generator(ApiKeyGenerator::test())
+    }
+
+    fn admin_team() -> TeamId {
+        TeamId::administrators()
     }
 
     #[tokio::test]
@@ -321,7 +332,10 @@ mod tests {
         let id = ApiKeyId::new("test-key").unwrap();
         let permissions = ApiKeyPermissions::read_only();
 
-        let result = service.create(id.clone(), "Test Key", permissions, None).await.unwrap();
+        let result = service
+            .create(id.clone(), "Test Key", admin_team(), permissions, None)
+            .await
+            .unwrap();
 
         assert!(result.secret.starts_with("pk_test_"));
         assert_eq!(result.api_key.name(), "Test Key");
@@ -334,7 +348,7 @@ mod tests {
         let id = ApiKeyId::new("test-key").unwrap();
 
         let created = service
-            .create(id, "Test Key", ApiKeyPermissions::read_only(), None)
+            .create(id, "Test Key", admin_team(), ApiKeyPermissions::read_only(), None)
             .await
             .unwrap();
 
@@ -357,7 +371,7 @@ mod tests {
         let id = ApiKeyId::new("test-key").unwrap();
 
         let created = service
-            .create(id.clone(), "Test Key", ApiKeyPermissions::read_only(), None)
+            .create(id.clone(), "Test Key", admin_team(), ApiKeyPermissions::read_only(), None)
             .await
             .unwrap();
 
@@ -384,7 +398,7 @@ mod tests {
         let id = ApiKeyId::new("test-key").unwrap();
 
         let created = service
-            .create(id.clone(), "Test Key", ApiKeyPermissions::read_only(), None)
+            .create(id.clone(), "Test Key", admin_team(), ApiKeyPermissions::read_only(), None)
             .await
             .unwrap();
 
@@ -403,7 +417,13 @@ mod tests {
         let rate_limits = RateLimitConfig::new(2, 100, 1000);
 
         let created = service
-            .create(id, "Test Key", ApiKeyPermissions::read_only(), Some(rate_limits))
+            .create(
+                id,
+                "Test Key",
+                admin_team(),
+                ApiKeyPermissions::read_only(),
+                Some(rate_limits),
+            )
             .await
             .unwrap();
 
@@ -429,7 +449,7 @@ mod tests {
             .with_knowledge_bases(ResourcePermission::all());
 
         let created = service
-            .create(id, "Test Key", permissions, None)
+            .create(id, "Test Key", admin_team(), permissions, None)
             .await
             .unwrap();
 
@@ -446,12 +466,15 @@ mod tests {
         let id = ApiKeyId::new("test-key").unwrap();
 
         service
-            .create(id.clone(), "Test Key", ApiKeyPermissions::new(), None)
+            .create(id.clone(), "Test Key", admin_team(), ApiKeyPermissions::new(), None)
             .await
             .unwrap();
 
         let new_permissions = ApiKeyPermissions::full_access();
-        let updated = service.update_permissions(&id, new_permissions).await.unwrap();
+        let updated = service
+            .update_permissions(&id, new_permissions)
+            .await
+            .unwrap();
 
         assert!(updated.permissions().admin);
     }
@@ -461,11 +484,23 @@ mod tests {
         let service = create_service();
 
         service
-            .create(ApiKeyId::new("key-1").unwrap(), "Key 1", ApiKeyPermissions::new(), None)
+            .create(
+                ApiKeyId::new("key-1").unwrap(),
+                "Key 1",
+                admin_team(),
+                ApiKeyPermissions::new(),
+                None,
+            )
             .await
             .unwrap();
         service
-            .create(ApiKeyId::new("key-2").unwrap(), "Key 2", ApiKeyPermissions::new(), None)
+            .create(
+                ApiKeyId::new("key-2").unwrap(),
+                "Key 2",
+                admin_team(),
+                ApiKeyPermissions::new(),
+                None,
+            )
             .await
             .unwrap();
 
@@ -482,7 +517,7 @@ mod tests {
         let id = ApiKeyId::new("test-key").unwrap();
 
         service
-            .create(id.clone(), "Test Key", ApiKeyPermissions::new(), None)
+            .create(id.clone(), "Test Key", admin_team(), ApiKeyPermissions::new(), None)
             .await
             .unwrap();
 

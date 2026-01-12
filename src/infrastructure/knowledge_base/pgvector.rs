@@ -8,11 +8,13 @@ use sqlx::postgres::PgPool;
 use sqlx::Row;
 
 use crate::domain::knowledge_base::{
-    AddDocumentsResult, DeleteDocumentsResult, Document, FilterCondition, FilterConnector,
-    FilterOperator, FilterValue, KnowledgeBaseId, KnowledgeBaseProvider, MetadataFilter,
-    SearchParams, SearchResult,
+    AddDocumentsResult, CreateDocumentRequest, DeleteDocumentsResult, Document, DocumentChunk,
+    DocumentSummary, FilterCondition, FilterConnector, FilterOperator, FilterValue,
+    KnowledgeBaseDocument, KnowledgeBaseId, KnowledgeBaseProvider, MetadataFilter, SearchParams,
+    SearchResult, SourceInfo,
 };
 use crate::domain::DomainError;
+use uuid::Uuid;
 
 /// Configuration for pgvector knowledge base
 #[derive(Debug, Clone)]
@@ -30,7 +32,7 @@ impl PgvectorConfig {
     pub fn new(dimensions: u32) -> Self {
         Self {
             dimensions,
-            table_name: "knowledge_base_vectors".to_string(),
+            table_name: "knowledge_base_document_chunks".to_string(),
             distance_metric: DistanceMetric::Cosine,
         }
     }
@@ -244,7 +246,7 @@ impl<E: EmbeddingProvider> PgvectorKnowledgeBase<E> {
         &self,
         op: &FilterOperator,
         value: &FilterValue,
-        json_path: &str,
+        _json_path: &str,
         params: &mut Vec<String>,
     ) -> (&'static str, String) {
         let param_idx = params.len() + 1;
@@ -375,6 +377,14 @@ impl<E: EmbeddingProvider + 'static> KnowledgeBaseProvider for PgvectorKnowledge
     }
 
     async fn search(&self, params: SearchParams) -> Result<Vec<SearchResult>, DomainError> {
+        tracing::debug!(
+            kb_id = self.id.as_str(),
+            query = %params.query,
+            top_k = params.top_k,
+            similarity_threshold = params.similarity_threshold,
+            "Starting KB search"
+        );
+
         // Generate embedding for the query
         let embeddings = self
             .embedding_provider
@@ -385,37 +395,34 @@ impl<E: EmbeddingProvider + 'static> KnowledgeBaseProvider for PgvectorKnowledge
             DomainError::knowledge_base("Failed to generate query embedding".to_string())
         })?;
 
+        tracing::debug!(
+            kb_id = self.id.as_str(),
+            embedding_dimensions = query_embedding.len(),
+            "Generated query embedding"
+        );
+
         let embedding_str = self.embedding_to_pgvector(&query_embedding);
         let op = self.config.distance_metric.operator();
 
-        let mut sql_params: Vec<String> = Vec::new();
-        let mut where_clauses = vec![format!("kb_id = '{}'", self.id.as_str())];
-
-        if let Some(filter) = &params.filter {
-            let filter_sql = self.filter_to_sql(filter, &mut sql_params);
-
-            if !filter_sql.is_empty() {
-                where_clauses.push(filter_sql);
-            }
-        }
-
-        let where_sql = where_clauses.join(" AND ");
-
+        // Query the new schema (knowledge_base_document_chunks) which is used by document ingestion
+        // Join with documents table to exclude disabled documents
         let query = format!(
             r#"
             SELECT
-                id,
-                content,
-                embedding {} '{}' as distance,
-                metadata,
-                source,
-                embedding
-            FROM {}
-            WHERE {}
+                c.id::text as id,
+                c.content,
+                c.embedding {} '{}' as distance,
+                c.metadata,
+                d.source_filename as source,
+                c.embedding::text as embedding
+            FROM knowledge_base_document_chunks c
+            JOIN knowledge_base_documents d ON c.document_id = d.id
+            WHERE c.kb_id = '{}'
+              AND (d.disabled IS NULL OR d.disabled = false)
             ORDER BY distance
             LIMIT {}
             "#,
-            op, embedding_str, self.config.table_name, where_sql, params.top_k
+            op, embedding_str, self.id.as_str(), params.top_k
         );
 
         let rows = sqlx::query(&query)
@@ -423,7 +430,14 @@ impl<E: EmbeddingProvider + 'static> KnowledgeBaseProvider for PgvectorKnowledge
             .await
             .map_err(|e| DomainError::knowledge_base(format!("Search failed: {}", e)))?;
 
+        tracing::debug!(
+            kb_id = self.id.as_str(),
+            rows_from_db = rows.len(),
+            "Retrieved rows from database"
+        );
+
         let mut results = Vec::with_capacity(rows.len());
+        let mut filtered_count = 0;
 
         for row in rows {
             let id: String = row.get("id");
@@ -435,6 +449,7 @@ impl<E: EmbeddingProvider + 'static> KnowledgeBaseProvider for PgvectorKnowledge
             let score = self.config.distance_metric.to_similarity(distance);
 
             if score < params.similarity_threshold {
+                filtered_count += 1;
                 continue;
             }
 
@@ -456,6 +471,14 @@ impl<E: EmbeddingProvider + 'static> KnowledgeBaseProvider for PgvectorKnowledge
 
             results.push(result);
         }
+
+        tracing::debug!(
+            kb_id = self.id.as_str(),
+            results_after_filter = results.len(),
+            filtered_by_threshold = filtered_count,
+            similarity_threshold = params.similarity_threshold,
+            "Search completed"
+        );
 
         Ok(results)
     }
@@ -640,6 +663,302 @@ impl<E: EmbeddingProvider + 'static> KnowledgeBaseProvider for PgvectorKnowledge
 
         let count: i64 = row.get("count");
         Ok(count as usize)
+    }
+
+    async fn list_by_source(&self, source: &str) -> Result<Vec<SearchResult>, DomainError> {
+        let query = format!(
+            "SELECT id, content, metadata, source FROM {} WHERE kb_id = $1 AND source = $2 ORDER BY id",
+            self.config.table_name
+        );
+
+        let rows = sqlx::query(&query)
+            .bind(self.id.as_str())
+            .bind(source)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| {
+                DomainError::knowledge_base(format!("Failed to list documents by source: {}", e))
+            })?;
+
+        let mut results = Vec::with_capacity(rows.len());
+
+        for row in rows {
+            let id: String = row.get("id");
+            let content: String = row.get("content");
+            let metadata: serde_json::Value = row.get("metadata");
+            let source: Option<String> = row.get("source");
+
+            let metadata_map: HashMap<String, serde_json::Value> =
+                serde_json::from_value(metadata).unwrap_or_default();
+
+            let mut result = SearchResult::new(&id, &content, 1.0).with_all_metadata(metadata_map);
+
+            if let Some(src) = source {
+                result = result.with_source(src);
+            }
+
+            results.push(result);
+        }
+
+        Ok(results)
+    }
+
+    async fn delete_by_source(&self, source: &str) -> Result<DeleteDocumentsResult, DomainError> {
+        let query = format!(
+            "DELETE FROM {} WHERE kb_id = $1 AND source = $2",
+            self.config.table_name
+        );
+
+        let result = sqlx::query(&query)
+            .bind(self.id.as_str())
+            .bind(source)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| {
+                DomainError::knowledge_base(format!("Failed to delete documents by source: {}", e))
+            })?;
+
+        Ok(DeleteDocumentsResult::new(result.rows_affected() as usize, 0))
+    }
+
+    async fn list_sources(&self) -> Result<Vec<SourceInfo>, DomainError> {
+        let query = format!(
+            "SELECT source, COUNT(*) as doc_count FROM {} WHERE kb_id = $1 AND source IS NOT NULL GROUP BY source ORDER BY source",
+            self.config.table_name
+        );
+
+        let rows = sqlx::query(&query)
+            .bind(self.id.as_str())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| {
+                DomainError::knowledge_base(format!("Failed to list sources: {}", e))
+            })?;
+
+        let mut sources = Vec::with_capacity(rows.len());
+
+        for row in rows {
+            let source: String = row.get("source");
+            let doc_count: i64 = row.get("doc_count");
+
+            sources.push(SourceInfo {
+                source,
+                document_count: doc_count as usize,
+            });
+        }
+
+        Ok(sources)
+    }
+
+    async fn ensure_schema(&self) -> Result<(), DomainError> {
+        self.ensure_table().await
+    }
+
+    // ========================================================================
+    // New document-based methods (for the new schema)
+    // ========================================================================
+
+    async fn create_document(
+        &self,
+        request: CreateDocumentRequest,
+    ) -> Result<KnowledgeBaseDocument, DomainError> {
+        // Insert document
+        let doc_id = Uuid::new_v4();
+        let chunk_count = request.chunks.len() as i32;
+        let original_size = request.original_content.len() as i64;
+        let metadata_json = serde_json::to_value(&request.metadata).unwrap_or_default();
+
+        sqlx::query(
+            r#"
+            INSERT INTO knowledge_base_documents
+            (id, kb_id, title, description, source_filename, content_type, original_size_bytes, chunk_count, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            "#,
+        )
+        .bind(doc_id)
+        .bind(self.id.as_str())
+        .bind(&request.title)
+        .bind(&request.description)
+        .bind(&request.source_filename)
+        .bind(&request.content_type)
+        .bind(original_size)
+        .bind(chunk_count)
+        .bind(&metadata_json)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DomainError::knowledge_base(format!("Failed to insert document: {}", e)))?;
+
+        // Insert chunks
+        for chunk in &request.chunks {
+            let chunk_id = Uuid::new_v4();
+            let embedding_str = format!("[{}]", chunk.embedding.iter().map(|f| f.to_string()).collect::<Vec<_>>().join(","));
+            let chunk_metadata = serde_json::to_value(&chunk.metadata).unwrap_or_default();
+
+            sqlx::query(
+                r#"
+                INSERT INTO knowledge_base_document_chunks
+                (id, document_id, kb_id, chunk_index, content, embedding, token_count, metadata)
+                VALUES ($1, $2, $3, $4, $5, $6::vector, $7, $8)
+                "#,
+            )
+            .bind(chunk_id)
+            .bind(doc_id)
+            .bind(self.id.as_str())
+            .bind(chunk.chunk_index)
+            .bind(&chunk.content)
+            .bind(&embedding_str)
+            .bind(chunk.token_count)
+            .bind(&chunk_metadata)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DomainError::knowledge_base(format!("Failed to insert chunk: {}", e)))?;
+        }
+
+        // Return the created document
+        Ok(KnowledgeBaseDocument::new(self.id.as_str())
+            .with_id(doc_id)
+            .with_chunk_count(chunk_count)
+            .with_original_size(original_size)
+            .with_metadata(request.metadata))
+    }
+
+    async fn get_document_by_id(&self, id: Uuid) -> Result<Option<KnowledgeBaseDocument>, DomainError> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, kb_id, title, description, source_filename, content_type,
+                   original_size_bytes, chunk_count, metadata, disabled, created_at, updated_at
+            FROM knowledge_base_documents
+            WHERE id = $1 AND kb_id = $2
+            "#,
+        )
+        .bind(id)
+        .bind(self.id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DomainError::knowledge_base(format!("Failed to get document: {}", e)))?;
+
+        match row {
+            Some(row) => {
+                let metadata: serde_json::Value = row.get("metadata");
+                let metadata_map: HashMap<String, serde_json::Value> =
+                    serde_json::from_value(metadata).unwrap_or_default();
+
+                Ok(Some(
+                    KnowledgeBaseDocument::new(self.id.as_str())
+                        .with_id(row.get("id"))
+                        .with_chunk_count(row.get("chunk_count"))
+                        .with_original_size(row.get::<Option<i64>, _>("original_size_bytes").unwrap_or(0))
+                        .with_metadata(metadata_map)
+                        .with_disabled(row.get("disabled"))
+                        .with_timestamps(row.get("created_at"), row.get("updated_at")),
+                ))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn list_documents(&self) -> Result<Vec<DocumentSummary>, DomainError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, title, source_filename, chunk_count, disabled, created_at
+            FROM knowledge_base_documents
+            WHERE kb_id = $1
+            ORDER BY created_at DESC
+            "#,
+        )
+        .bind(self.id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::knowledge_base(format!("Failed to list documents: {}", e)))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| DocumentSummary {
+                id: row.get("id"),
+                title: row.get("title"),
+                source_filename: row.get("source_filename"),
+                chunk_count: row.get("chunk_count"),
+                disabled: row.get("disabled"),
+                created_at: row.get("created_at"),
+            })
+            .collect())
+    }
+
+    async fn get_document_chunks(&self, document_id: Uuid) -> Result<Vec<DocumentChunk>, DomainError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, document_id, kb_id, chunk_index, content, embedding::text, token_count, metadata, created_at
+            FROM knowledge_base_document_chunks
+            WHERE document_id = $1 AND kb_id = $2
+            ORDER BY chunk_index
+            "#,
+        )
+        .bind(document_id)
+        .bind(self.id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::knowledge_base(format!("Failed to get chunks: {}", e)))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let embedding_str: String = row.get("embedding");
+                let embedding = parse_pgvector(&embedding_str).unwrap_or_default();
+                let metadata: serde_json::Value = row.get("metadata");
+                let metadata_map: HashMap<String, serde_json::Value> =
+                    serde_json::from_value(metadata).unwrap_or_default();
+
+                DocumentChunk::new(
+                    row.get("document_id"),
+                    self.id.as_str(),
+                    row.get("chunk_index"),
+                    row.get::<String, _>("content"),
+                )
+                .with_id(row.get("id"))
+                .with_embedding(embedding)
+                .with_token_count(row.get::<Option<i32>, _>("token_count").unwrap_or(0))
+                .with_metadata(metadata_map)
+                .with_created_at(row.get("created_at"))
+            })
+            .collect())
+    }
+
+    async fn delete_document_by_id(&self, id: Uuid) -> Result<bool, DomainError> {
+        // Chunks are deleted via ON DELETE CASCADE
+        let result = sqlx::query("DELETE FROM knowledge_base_documents WHERE id = $1 AND kb_id = $2")
+            .bind(id)
+            .bind(self.id.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DomainError::knowledge_base(format!("Failed to delete document: {}", e)))?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn disable_document(&self, id: Uuid) -> Result<bool, DomainError> {
+        let result = sqlx::query(
+            "UPDATE knowledge_base_documents SET disabled = true, updated_at = NOW() WHERE id = $1 AND kb_id = $2",
+        )
+        .bind(id)
+        .bind(self.id.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DomainError::knowledge_base(format!("Failed to disable document: {}", e)))?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn enable_document(&self, id: Uuid) -> Result<bool, DomainError> {
+        let result = sqlx::query(
+            "UPDATE knowledge_base_documents SET disabled = false, updated_at = NOW() WHERE id = $1 AND kb_id = $2",
+        )
+        .bind(id)
+        .bind(self.id.as_str())
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DomainError::knowledge_base(format!("Failed to enable document: {}", e)))?;
+
+        Ok(result.rows_affected() > 0)
     }
 }
 

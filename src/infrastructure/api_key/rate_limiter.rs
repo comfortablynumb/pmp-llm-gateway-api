@@ -80,6 +80,17 @@ impl RateLimiter {
         config: &RateLimitConfig,
         tokens: Option<u32>,
     ) -> RateLimitResult {
+        // If rate limiting is disabled, always allow
+        if !config.is_enabled() {
+            return RateLimitResult {
+                allowed: true,
+                remaining: u32::MAX,
+                limit: u32::MAX,
+                reset_in_seconds: 0,
+                limit_type: None,
+            };
+        }
+
         self.maybe_cleanup().await;
 
         let now = Instant::now();
@@ -109,6 +120,17 @@ impl RateLimiter {
         config: &RateLimitConfig,
         tokens: Option<u32>,
     ) -> RateLimitResult {
+        // If rate limiting is disabled, always allow (no need to record)
+        if !config.is_enabled() {
+            return RateLimitResult {
+                allowed: true,
+                remaining: u32::MAX,
+                limit: u32::MAX,
+                reset_in_seconds: 0,
+                limit_type: None,
+            };
+        }
+
         self.maybe_cleanup().await;
 
         let now = Instant::now();
@@ -297,7 +319,20 @@ mod tests {
     use super::*;
 
     fn default_config() -> RateLimitConfig {
-        RateLimitConfig::new(10, 100, 1000)
+        RateLimitConfig::new(10, 100, 1000) // new() creates with enabled=true
+    }
+
+    #[tokio::test]
+    async fn test_rate_limiter_disabled_always_allows() {
+        let limiter = RateLimiter::new();
+        let config = RateLimitConfig::default(); // default is disabled
+
+        // Should always allow when disabled
+        for _ in 0..1000 {
+            let result = limiter.check_and_record("key1", &config, None).await;
+            assert!(result.allowed);
+            assert_eq!(result.remaining, u32::MAX);
+        }
     }
 
     #[tokio::test]

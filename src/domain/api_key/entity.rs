@@ -6,6 +6,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::validation::{validate_api_key_id, ApiKeyValidationError};
+use crate::domain::storage::{StorageEntity, StorageKey};
+use crate::domain::team::TeamId;
 
 /// API Key identifier - alphanumeric + hyphens, max 50 characters
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -43,6 +45,20 @@ impl From<ApiKeyId> for String {
 impl std::fmt::Display for ApiKeyId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+impl StorageKey for ApiKeyId {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl StorageEntity for ApiKey {
+    type Key = ApiKeyId;
+
+    fn key(&self) -> &Self::Key {
+        &self.id
     }
 }
 
@@ -219,7 +235,10 @@ impl ApiKeyPermissions {
 /// Rate limit configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RateLimitConfig {
-    /// Maximum requests per minute
+    /// Whether rate limiting is enabled (disabled by default)
+    #[serde(default)]
+    pub enabled: bool,
+    /// Maximum requests per minute (default: 500)
     pub requests_per_minute: u32,
     /// Maximum requests per hour
     pub requests_per_hour: u32,
@@ -233,23 +252,37 @@ pub struct RateLimitConfig {
 impl Default for RateLimitConfig {
     fn default() -> Self {
         Self {
-            requests_per_minute: 60,
-            requests_per_hour: 1000,
-            requests_per_day: 10000,
+            enabled: false,
+            requests_per_minute: 500,
+            requests_per_hour: 5000,
+            requests_per_day: 50000,
             tokens_per_minute: None,
         }
     }
 }
 
 impl RateLimitConfig {
-    /// Create a new rate limit configuration
+    /// Create a new rate limit configuration (enabled by default when explicitly created)
     pub fn new(per_minute: u32, per_hour: u32, per_day: u32) -> Self {
         Self {
+            enabled: true,
             requests_per_minute: per_minute,
             requests_per_hour: per_hour,
             requests_per_day: per_day,
             tokens_per_minute: None,
         }
+    }
+
+    /// Enable rate limiting
+    pub fn enabled(mut self) -> Self {
+        self.enabled = true;
+        self
+    }
+
+    /// Disable rate limiting
+    pub fn disabled(mut self) -> Self {
+        self.enabled = false;
+        self
     }
 
     /// Set token rate limit
@@ -258,14 +291,20 @@ impl RateLimitConfig {
         self
     }
 
-    /// Create unlimited rate limits
+    /// Create unlimited rate limits (effectively disabled)
     pub fn unlimited() -> Self {
         Self {
+            enabled: false,
             requests_per_minute: u32::MAX,
             requests_per_hour: u32::MAX,
             requests_per_day: u32::MAX,
             tokens_per_minute: None,
         }
+    }
+
+    /// Check if rate limiting is enabled
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
     }
 }
 
@@ -281,12 +320,14 @@ pub struct ApiKey {
     description: Option<String>,
     /// Hashed secret (the actual key)
     /// Format: algorithm$salt$hash (e.g., "argon2$randomsalt$hashedvalue")
-    #[serde(skip_serializing)]
+    /// Note: This is stored in the database but never exposed in API responses (separate DTOs used).
     secret_hash: String,
     /// Key prefix for identification (first 8 chars of the key)
     key_prefix: String,
     /// Current status of the key
     status: ApiKeyStatus,
+    /// Team that owns this API key (required)
+    team_id: TeamId,
     /// Permissions granted to this key
     permissions: ApiKeyPermissions,
     /// Rate limit configuration
@@ -313,6 +354,7 @@ impl ApiKey {
         name: impl Into<String>,
         secret_hash: impl Into<String>,
         key_prefix: impl Into<String>,
+        team_id: TeamId,
     ) -> Self {
         let now = Utc::now();
 
@@ -323,6 +365,7 @@ impl ApiKey {
             secret_hash: secret_hash.into(),
             key_prefix: key_prefix.into(),
             status: ApiKeyStatus::Active,
+            team_id,
             permissions: ApiKeyPermissions::default(),
             rate_limits: RateLimitConfig::default(),
             expires_at: None,
@@ -417,6 +460,10 @@ impl ApiKey {
         self.created_by.as_deref()
     }
 
+    pub fn team_id(&self) -> &TeamId {
+        &self.team_id
+    }
+
     // Status checks
 
     /// Check if the key is currently valid and usable
@@ -506,6 +553,12 @@ impl ApiKey {
         }
     }
 
+    /// Update the team ownership
+    pub fn set_team_id(&mut self, team_id: TeamId) {
+        self.team_id = team_id;
+        self.touch();
+    }
+
     fn touch(&mut self) {
         self.updated_at = Utc::now();
     }
@@ -514,6 +567,12 @@ impl ApiKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn create_test_api_key(id: &str, name: &str) -> ApiKey {
+        let key_id = ApiKeyId::new(id).unwrap();
+        let team_id = TeamId::administrators();
+        ApiKey::new(key_id, name, "hashed_secret", "pk_test_", team_id)
+    }
 
     #[test]
     fn test_api_key_id_valid() {
@@ -584,8 +643,7 @@ mod tests {
 
     #[test]
     fn test_rate_limit_config() {
-        let config = RateLimitConfig::new(60, 1000, 10000)
-            .with_tokens_per_minute(100000);
+        let config = RateLimitConfig::new(60, 1000, 10000).with_tokens_per_minute(100000);
 
         assert_eq!(config.requests_per_minute, 60);
         assert_eq!(config.requests_per_hour, 1000);
@@ -595,24 +653,31 @@ mod tests {
 
     #[test]
     fn test_api_key_creation() {
-        let id = ApiKeyId::new("test-key").unwrap();
-        let key = ApiKey::new(id, "Test Key", "hashed_secret", "pk_test_")
+        let key = create_test_api_key("test-key", "Test Key")
             .with_description("A test API key")
             .with_permissions(ApiKeyPermissions::read_only());
 
         assert_eq!(key.name(), "Test Key");
         assert_eq!(key.description(), Some("A test API key"));
         assert_eq!(key.key_prefix(), "pk_test_");
+        assert_eq!(key.team_id().as_str(), "administrators");
         assert!(key.is_valid());
         assert!(!key.is_expired());
     }
 
     #[test]
+    fn test_api_key_with_team() {
+        let key_id = ApiKeyId::new("test-key").unwrap();
+        let team_id = TeamId::new("my-team").unwrap();
+        let key = ApiKey::new(key_id, "Test Key", "hash", "pk_", team_id);
+
+        assert_eq!(key.team_id().as_str(), "my-team");
+    }
+
+    #[test]
     fn test_api_key_expiration() {
-        let id = ApiKeyId::new("test-key").unwrap();
         let past = Utc::now() - chrono::Duration::hours(1);
-        let key = ApiKey::new(id, "Test Key", "hash", "pk_")
-            .with_expiration(past);
+        let key = create_test_api_key("test-key", "Test Key").with_expiration(past);
 
         assert!(key.is_expired());
         assert!(!key.is_valid());
@@ -620,8 +685,7 @@ mod tests {
 
     #[test]
     fn test_api_key_status_changes() {
-        let id = ApiKeyId::new("test-key").unwrap();
-        let mut key = ApiKey::new(id, "Test Key", "hash", "pk_");
+        let mut key = create_test_api_key("test-key", "Test Key");
 
         assert!(key.is_valid());
 
@@ -644,12 +708,20 @@ mod tests {
 
     #[test]
     fn test_api_key_record_usage() {
-        let id = ApiKeyId::new("test-key").unwrap();
-        let mut key = ApiKey::new(id, "Test Key", "hash", "pk_");
+        let mut key = create_test_api_key("test-key", "Test Key");
 
         assert!(key.last_used_at().is_none());
 
         key.record_usage();
         assert!(key.last_used_at().is_some());
+    }
+
+    #[test]
+    fn test_api_key_set_team_id() {
+        let mut key = create_test_api_key("test-key", "Test Key");
+        let new_team_id = TeamId::new("new-team").unwrap();
+
+        key.set_team_id(new_team_id);
+        assert_eq!(key.team_id().as_str(), "new-team");
     }
 }

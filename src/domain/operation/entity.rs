@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::error::OperationError;
+use crate::domain::storage::{StorageEntity, StorageKey};
 
 /// Regex pattern for valid operation IDs: op-{uuid}
 static ID_PATTERN: Lazy<Regex> =
@@ -65,6 +66,20 @@ impl fmt::Display for OperationId {
 impl AsRef<str> for OperationId {
     fn as_ref(&self) -> &str {
         &self.0
+    }
+}
+
+impl StorageKey for OperationId {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl StorageEntity for Operation {
+    type Key = OperationId;
+
+    fn key(&self) -> &Self::Key {
+        &self.id
     }
 }
 

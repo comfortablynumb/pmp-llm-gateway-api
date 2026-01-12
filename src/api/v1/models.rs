@@ -58,9 +58,6 @@ pub async fn get_model(
 mod tests {
     use super::*;
 
-    // Integration tests would go here, testing with a real state
-    // For now, we test the response types
-
     #[test]
     fn test_models_response_format() {
         let response = ModelsResponse::new(vec![
@@ -75,5 +72,52 @@ mod tests {
         let json = serde_json::to_string(&response).unwrap();
         assert!(json.contains("\"object\":\"list\""));
         assert!(json.contains("\"id\":\"gpt-4\""));
+    }
+
+    #[test]
+    fn test_models_response_empty() {
+        let response = ModelsResponse::new(vec![]);
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"object\":\"list\""));
+        assert!(json.contains("\"data\":[]"));
+    }
+
+    #[test]
+    fn test_models_response_multiple() {
+        let response = ModelsResponse::new(vec![
+            ApiModel {
+                id: "gpt-4".to_string(),
+                object: "model".to_string(),
+                created: 1234567890,
+                owned_by: "openai".to_string(),
+            },
+            ApiModel {
+                id: "gpt-3.5-turbo".to_string(),
+                object: "model".to_string(),
+                created: 1234567800,
+                owned_by: "openai".to_string(),
+            },
+        ]);
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"gpt-4\""));
+        assert!(json.contains("\"gpt-3.5-turbo\""));
+    }
+
+    #[test]
+    fn test_api_model_serialization() {
+        let model = ApiModel {
+            id: "test-model".to_string(),
+            object: "model".to_string(),
+            created: 1700000000,
+            owned_by: "test-org".to_string(),
+        };
+
+        let json = serde_json::to_string(&model).unwrap();
+        assert!(json.contains("\"id\":\"test-model\""));
+        assert!(json.contains("\"object\":\"model\""));
+        assert!(json.contains("\"created\":1700000000"));
+        assert!(json.contains("\"owned_by\":\"test-org\""));
     }
 }

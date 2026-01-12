@@ -1,7 +1,7 @@
 services:
   # PostgreSQL database
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: pmp-llm-gateway-postgres
     environment:
       POSTGRES_USER: gateway
@@ -9,8 +9,6 @@ services:
       POSTGRES_DB: llm_gateway
     ports:
       - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U gateway -d llm_gateway"]
       interval: 5s
@@ -20,6 +18,7 @@ services:
       - full
       - postgres
       - test
+      - dev
 
   # Redis cache
   redis:
@@ -27,8 +26,6 @@ services:
     container_name: pmp-llm-gateway-redis
     ports:
       - "6379:6379"
-    volumes:
-      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -38,26 +35,45 @@ services:
       - full
       - redis
 
-  # pgvector for embeddings
-  pgvector:
-    image: pgvector/pgvector:pg16
-    container_name: pmp-llm-gateway-pgvector
-    environment:
-      POSTGRES_USER: gateway
-      POSTGRES_PASSWORD: gateway_dev
-      POSTGRES_DB: knowledge_base
-    ports:
-      - "5433:5432"
+  # Database migrations
+  dbmate:
+    image: amacneil/dbmate:2.28.0
+    container_name: pmp-llm-gateway-dbmate
     volumes:
-      - pgvector_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U gateway -d knowledge_base"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+      - ./db/migrations:/db/migrations:ro
+    environment:
+      DATABASE_URL: "postgres://gateway:gateway_dev@postgres:5432/llm_gateway?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command:
+      - '--no-dump-schema'
+      - 'up'
     profiles:
       - full
-      - pgvector
+      - postgres
+      - test
+      - dev
+
+  # Database seeds (development only)
+  dbmate-seeds:
+    image: amacneil/dbmate:2.28.0
+    container_name: pmp-llm-gateway-dbmate-seeds
+    volumes:
+      - ./db/seeds:/db/migrations:ro
+    environment:
+      DATABASE_URL: "postgres://gateway:gateway_dev@postgres:5432/llm_gateway?sslmode=disable"
+    depends_on:
+      dbmate:
+        condition: service_completed_successfully
+    command:
+      - '--no-dump-schema'
+      - 'up'
+    profiles:
+      - full
+      - postgres
+      - test
+      - dev
 
   # ============================================
   # Integration Test Services (test profile)
@@ -137,6 +153,11 @@ services:
       RUST_MIN_STACK: "16777216"
       APP__SERVER__HOST: "0.0.0.0"
       APP__SERVER__PORT: "8080"
+      # Database configuration for PostgreSQL persistence
+      DATABASE_URL: "postgres://gateway:gateway_dev@postgres:5432/llm_gateway?sslmode=disable"
+      APP__STORAGE__BACKEND: "postgres"
+      # JWT secret for session persistence
+      JWT_SECRET: "test-jwt-secret-for-integration-tests-12345678901234567890"
       # LLM provider configuration for testing
       LLM_PROVIDER: "openai"
       OPENAI_API_KEY: "test-openai-key"
@@ -147,6 +168,8 @@ services:
       AZURE_OPENAI_ENDPOINT: "http://mock-azure-openai:8080"
       # Admin API key for testing
       ADMIN_API_KEY: "test-admin-key-12345678901234567890"
+      # Default admin password for development/testing (min 8 chars)
+      ADMIN_DEFAULT_PASSWORD: "admin123"
     ports:
       - "8080:8080"
     depends_on:
@@ -156,6 +179,8 @@ services:
         condition: service_healthy
       mock-azure-openai:
         condition: service_healthy
+      dbmate:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:8080/health"]
       interval: 5s
@@ -180,8 +205,3 @@ services:
     profiles:
       - test
     command: ["--glob", "**/*.hurl", "--test", "--color", "--very-verbose", "--jobs", "1"]
-
-volumes:
-  postgres_data:
-  redis_data:
-  pgvector_data:

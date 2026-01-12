@@ -31,5 +31,6 @@ pub use executor::{StepExecutionResult, WorkflowExecutor, WorkflowResult};
 pub use repository::WorkflowRepository;
 pub use step_types::{
     ChatCompletionStep, Condition, ConditionalAction, ConditionalStep, ConditionOperator,
-    CragScoringStep, KnowledgeBaseSearchStep, ScoringStrategy, WorkflowStepType,
+    CragScoringStep, HttpMethod, HttpRequestStep, KnowledgeBaseSearchStep, ScoringStrategy,
+    WorkflowStepType,
 };

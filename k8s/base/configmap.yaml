@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llm-gateway-config
+  namespace: llm-gateway
+  labels:
+    app.kubernetes.io/name: pmp-llm-gateway
+    app.kubernetes.io/component: config
+data:
+  # Server configuration
+  APP__SERVER__HOST: "0.0.0.0"
+  APP__SERVER__PORT: "8080"
+
+  # Logging configuration
+  APP__LOGGING__LEVEL: "info"
+  APP__LOGGING__FORMAT: "json"
+
+  # Observability - Tracing
+  APP__OBSERVABILITY__TRACING__ENABLED: "true"
+  APP__OBSERVABILITY__TRACING__OTLP_ENDPOINT: "http://otel-collector.observability:4317"
+  APP__OBSERVABILITY__TRACING__SERVICE_NAME: "pmp-llm-gateway"
+  APP__OBSERVABILITY__TRACING__SAMPLING_RATIO: "1.0"
+
+  # Observability - Metrics
+  APP__OBSERVABILITY__METRICS__ENABLED: "true"
+  APP__OBSERVABILITY__METRICS__PATH: "/metrics"
+
+  # Auth configuration
+  APP__AUTH__JWT_EXPIRATION_HOURS: "24"

@@ -16,7 +16,8 @@ A Rust-based unified gateway for multiple LLM providers with advanced features.
 - **Storage**: In-memory and PostgreSQL strategies
 - **API Keys**: Permission-based access control with rate limiting
 - **Streaming**: Server-Sent Events (SSE) for real-time responses
-- **Admin UI**: Embedded web UI for managing models, prompts, API keys, and workflows
+- **A/B Testing**: Compare LLM models with consistent API key assignment, metrics tracking, and statistical significance
+- **Admin UI**: Embedded web UI for managing models, prompts, API keys, workflows, and experiments
 
 ## Quick Start
 
@@ -35,12 +36,25 @@ cd pmp-llm-gateway-api
 bin/up.bat full    # Windows
 bin/up.sh full     # Linux/Mac
 
+# Or start with seed data (includes default models, prompts, workflows, etc.)
+bin/up.bat dev     # Windows
+bin/up.sh dev      # Linux/Mac
+
 # Run the server (API + UI)
 cargo run serve
 
 # Server starts on http://localhost:8080
 # Admin UI available at http://localhost:8080/ui/
 ```
+
+### Docker Profiles
+
+| Profile | Description |
+|---------|-------------|
+| `full` | PostgreSQL + Redis + migrations |
+| `dev` | PostgreSQL + migrations + seed data (recommended for development) |
+| `postgres` | PostgreSQL + migrations only |
+| `test` | Full test environment with mock LLM providers |
 
 ### CLI Commands
 
@@ -73,7 +87,53 @@ Example environment variables:
 ```bash
 APP__SERVER__PORT=3000
 APP__LOGGING__LEVEL=debug
+ADMIN_DEFAULT_PASSWORD=mysecretpassword  # Initial admin user password
 ```
+
+### Session Persistence (JWKS)
+
+User sessions persist across app restarts when `USERS_JWKS` is configured with an RSA key pair:
+
+```bash
+# Set USERS_JWKS with an RSA key (RS256)
+export USERS_JWKS='{
+  "keys": [{
+    "kty": "RSA",
+    "kid": "key-1",
+    "alg": "RS256",
+    "n": "<base64url-encoded-modulus>",
+    "e": "AQAB",
+    "d": "<base64url-encoded-private-exponent>",
+    "p": "<base64url-encoded-prime-p>",
+    "q": "<base64url-encoded-prime-q>"
+  }]
+}'
+```
+
+Generate an RSA key pair using OpenSSL:
+```bash
+# Generate RSA private key
+openssl genrsa -out private.pem 2048
+
+# Extract components for JWK (use a JWK generator tool or library)
+# Tools: https://mkjwk.org/ or npm package 'pem-jwk'
+```
+
+JWK fields:
+- `n`: RSA modulus (base64url)
+- `e`: Public exponent (base64url, typically "AQAB" for 65537)
+- `d`: Private exponent (base64url)
+- `p`, `q`: Prime factors (base64url, optional but recommended)
+
+If `USERS_JWKS` is not set, falls back to `JWT_SECRET`. If neither is set, a random secret is generated (sessions won't persist across restarts).
+
+### Initial Admin User
+
+On first run, an `admin` user is automatically created for the Admin UI. The password is:
+- Set via `ADMIN_DEFAULT_PASSWORD` environment variable (if defined)
+- Otherwise, a random password is generated and logged to console
+
+For development with Docker Compose, `ADMIN_DEFAULT_PASSWORD` is set to `admin123`.
 
 ## API Endpoints
 
@@ -195,7 +255,9 @@ Operation statuses: `pending`, `running`, `completed`, `failed`, `cancelled`
 
 ### Admin API
 
-All admin endpoints require API key with `admin: true` permission.
+All admin endpoints require API key with `admin: true` permission or JWT authentication (Admin UI).
+
+Admin endpoints are available at both `/admin/*` and `/api/v1/*` prefixes. The Admin UI uses `/api/v1/*`.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -224,6 +286,16 @@ All admin endpoints require API key with `admin: true` permission.
 | `/admin/workflows/{id}` | PUT | Update workflow |
 | `/admin/workflows/{id}` | DELETE | Delete workflow |
 | `/admin/credentials/providers` | GET | List credential provider types |
+| `/admin/experiments` | GET | List all experiments |
+| `/admin/experiments` | POST | Create experiment |
+| `/admin/experiments/{id}` | GET | Get experiment by ID |
+| `/admin/experiments/{id}` | PUT | Update experiment |
+| `/admin/experiments/{id}` | DELETE | Delete experiment |
+| `/admin/experiments/{id}/start` | POST | Start experiment |
+| `/admin/experiments/{id}/pause` | POST | Pause running experiment |
+| `/admin/experiments/{id}/resume` | POST | Resume paused experiment |
+| `/admin/experiments/{id}/complete` | POST | Complete experiment |
+| `/admin/experiments/{id}/results` | GET | Get experiment results and metrics |
 
 #### Examples
 
@@ -274,6 +346,64 @@ bin/up.bat postgres
 bin/up.sh redis
 ```
 
+## Kubernetes Deployment
+
+Kubernetes manifests are provided in `k8s/` using Kustomize.
+
+### Quick Deploy
+
+```bash
+# Deploy base configuration
+kubectl apply -k k8s/base
+
+# Deploy production overlay
+kubectl apply -k k8s/overlays/production
+```
+
+### Manifest Structure
+
+```
+k8s/
+├── base/                    # Base manifests
+│   ├── namespace.yaml       # Namespace definition
+│   ├── configmap.yaml       # Application configuration
+│   ├── secret.yaml          # Secrets template
+│   ├── deployment.yaml      # Deployment with probes
+│   ├── service.yaml         # ClusterIP service
+│   ├── serviceaccount.yaml  # Service account
+│   ├── hpa.yaml             # Horizontal Pod Autoscaler
+│   ├── servicemonitor.yaml  # Prometheus ServiceMonitor
+│   └── kustomization.yaml   # Kustomize config
+└── overlays/
+    └── production/          # Production overlay
+        ├── kustomization.yaml
+        └── deployment-patch.yaml
+```
+
+### Features
+
+- **Health Probes**: Liveness (`/live`), readiness (`/ready`), startup (`/health`)
+- **Metrics**: Prometheus scraping via annotations and ServiceMonitor
+- **Security**: Non-root user, read-only filesystem, dropped capabilities
+- **Scaling**: HPA with CPU/memory metrics, scale 2-10 pods
+- **Observability**: OpenTelemetry tracing to OTLP collector
+
+### Configuration
+
+Environment variables via ConfigMap/Secret:
+
+```yaml
+# ConfigMap
+APP__SERVER__PORT: "8080"
+APP__LOGGING__LEVEL: "info"
+APP__LOGGING__FORMAT: "json"
+APP__OBSERVABILITY__TRACING__ENABLED: "true"
+APP__OBSERVABILITY__TRACING__OTLP_ENDPOINT: "http://otel-collector:4317"
+
+# Secret
+APP__AUTH__JWT_SECRET: "your-secret"
+```
+
 ## Integration Tests
 
 Integration tests use [hurl](https://hurl.dev/) with mocked LLM providers via [pmp-mock-http](https://github.com/comfortablynumb/pmp-mock-http).
@@ -284,7 +414,7 @@ bin/test-integration.bat    # Windows
 bin/test-integration.sh     # Linux/Mac
 ```
 
-Test files are located in `tests/integration/hurl/` (17 files, 123 requests):
+Test files are located in `tests/integration/hurl/` (18 files):
 - Health endpoints (liveness, readiness, health check)
 - Chat completions (streaming and non-streaming, with parameters)
 - Chat with prompt references and variable substitution
@@ -553,6 +683,73 @@ let filter = FilterBuilder::or()
 
 Multi-step workflows that chain operations together with variable references between steps.
 
+### Built-in Workflow Templates
+
+The gateway includes 7 pre-built workflow templates ready to use:
+
+| ID | Name | Description |
+|----|------|-------------|
+| `basic-rag` | Basic RAG | Search knowledge base and generate answer with context |
+| `crag-pipeline` | CRAG Pipeline | Search, score relevance with LLM, filter, then generate |
+| `moderated-chat` | Moderated Chat | Check content safety before generating response |
+| `chain-of-thought` | Chain of Thought | Multi-step reasoning for complex questions |
+| `summarize-translate` | Summarize and Translate | Summarize content then translate to target language |
+| `code-review` | Code Review | Multi-aspect code review (security + quality) |
+| `intent-router` | Intent Router | Classify intent and route to appropriate handler |
+
+#### Example: Using Basic RAG
+
+```bash
+curl -X POST http://localhost:8080/v1/workflows/basic-rag/execute \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": {
+      "knowledge_base_id": "product-docs",
+      "question": "How do I reset my password?"
+    }
+  }'
+```
+
+#### Example: Using Chain of Thought
+
+```bash
+curl -X POST http://localhost:8080/v1/workflows/chain-of-thought/execute \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": {
+      "question": "What would happen if the Earth suddenly stopped rotating?"
+    }
+  }'
+```
+
+#### Example: Using Code Review
+
+```bash
+curl -X POST http://localhost:8080/v1/workflows/code-review/execute \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": {
+      "code": "def process(data):\n    return eval(data)"
+    }
+  }'
+```
+
+#### Example: Using Intent Router
+
+```bash
+curl -X POST http://localhost:8080/v1/workflows/intent-router/execute \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": {
+      "message": "I am having trouble logging into my account"
+    }
+  }'
+```
+
 ### Variable Reference Syntax
 
 - `${request:field}` - Reference to workflow execution request input
@@ -562,14 +759,14 @@ Multi-step workflows that chain operations together with variable references bet
 
 ### Step Types
 
-| Type | Description |
-|------|-------------|
-| `chat_completion` | Execute LLM chat completion |
-| `knowledge_base_search` | Search a knowledge base |
-| `crag_scoring` | Score documents for relevance |
-| `conditional` | Branch based on conditions |
+| Type | Description | Required Fields |
+|------|-------------|-----------------|
+| `chat_completion` | Execute LLM chat completion | `model_id`, `prompt_id`, `user_message` |
+| `knowledge_base_search` | Search a knowledge base | `knowledge_base_id`, `query` |
+| `crag_scoring` | Score documents for relevance | `input_documents`, `query`, `model_id`, `prompt_id` |
+| `conditional` | Branch based on conditions | `conditions`, `default_action` |
 
-### Example Workflow
+### Creating Custom Workflows
 
 ```bash
 # Create a workflow
@@ -590,7 +787,8 @@ curl -X POST http://localhost:8080/admin/workflows \
       {
         "name": "answer",
         "type": "chat_completion",
-        "model_id": "gpt-4",
+        "model_id": "gpt-4o",
+        "prompt_id": "rag-system",
         "user_message": "Question: ${request:question}\n\nContext:\n${step:search:documents}"
       }
     ]
@@ -636,6 +834,7 @@ The gateway includes an embedded web UI for administration, accessible at `/ui/`
 - **API Keys**: Create, suspend, activate, revoke API keys with granular permissions
 - **Workflows**: Visual editor for multi-step workflows
 - **Credentials**: View available credential providers
+- **Experiments**: A/B testing management with lifecycle control, variant configuration, and results analysis
 
 ### Authentication
 

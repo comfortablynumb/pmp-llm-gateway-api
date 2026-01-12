@@ -195,12 +195,13 @@ impl ApiKeyRepository for InMemoryApiKeyRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::api_key::ApiKeyPermissions;
+    use crate::domain::team::TeamId;
     use chrono::{Duration, Utc};
 
     fn create_test_key(id: &str, prefix: &str) -> ApiKey {
         let key_id = ApiKeyId::new(id).unwrap();
-        ApiKey::new(key_id, format!("Test Key {}", id), "hash", prefix)
+        let team_id = TeamId::administrators();
+        ApiKey::new(key_id, format!("Test Key {}", id), "hash", prefix, team_id)
     }
 
     #[tokio::test]
@@ -342,13 +343,14 @@ mod tests {
     #[tokio::test]
     async fn test_get_expiring_before() {
         let repo = InMemoryApiKeyRepository::new();
+        let team_id = TeamId::administrators();
 
         let key_id = ApiKeyId::new("expiring").unwrap();
-        let expiring_key = ApiKey::new(key_id, "Expiring Key", "hash", "pk_exp_")
+        let expiring_key = ApiKey::new(key_id, "Expiring Key", "hash", "pk_exp_", team_id.clone())
             .with_expiration(Utc::now() + Duration::hours(1));
 
         let key_id2 = ApiKeyId::new("not-expiring").unwrap();
-        let not_expiring = ApiKey::new(key_id2, "Not Expiring", "hash", "pk_not_")
+        let not_expiring = ApiKey::new(key_id2, "Not Expiring", "hash", "pk_not_", team_id)
             .with_expiration(Utc::now() + Duration::days(30));
 
         repo.create(expiring_key).await.unwrap();

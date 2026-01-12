@@ -1,9 +1,6 @@
 #!/bin/bash
 
-PROFILE=${1:-}
+# Default to "full" profile if none specified
+PROFILE=${1:-full}
 
-if [ -n "$PROFILE" ]; then
-    docker compose --profile "$PROFILE" rm -f -s -v
-else
-    docker compose rm -f -s -v
-fi
+docker compose --profile "$PROFILE" rm -f -s -v

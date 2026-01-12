@@ -80,7 +80,8 @@ impl StorageFactory {
             }
             StorageConfig::Postgres(pg_config) => {
                 let storage = PostgresStorage::<E>::connect(pg_config, table_name).await?;
-                storage.ensure_table().await?;
+                // Tables are now created via dbmate migrations in db/migrations/
+                // Do NOT call ensure_table() - use migrations instead
                 Ok(Arc::new(storage))
             }
         }
@@ -95,6 +96,9 @@ impl StorageFactory {
     }
 
     /// Creates a PostgreSQL storage
+    ///
+    /// Note: Tables must be created via dbmate migrations in db/migrations/
+    /// The ensure_table() method is no longer called automatically.
     pub async fn create_postgres<E>(
         config: &PostgresConfig,
         table_name: &str,
@@ -103,8 +107,23 @@ impl StorageFactory {
         E: StorageEntity + 'static,
     {
         let storage = PostgresStorage::connect(config, table_name).await?;
-        storage.ensure_table().await?;
+        // Tables are now created via dbmate migrations in db/migrations/
+        // Do NOT call ensure_table() - use migrations instead
         Ok(Arc::new(storage))
+    }
+
+    /// Creates a PostgreSQL storage using an existing connection pool
+    ///
+    /// This allows reusing a database connection pool across multiple storage instances.
+    /// Note: Tables must be created via dbmate migrations in db/migrations/
+    pub fn create_postgres_with_pool<E>(
+        pool: sqlx::PgPool,
+        table_name: &str,
+    ) -> Arc<PostgresStorage<E>>
+    where
+        E: StorageEntity + 'static,
+    {
+        Arc::new(PostgresStorage::new(pool, table_name))
     }
 }
 

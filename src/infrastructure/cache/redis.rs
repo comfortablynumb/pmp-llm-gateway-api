@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use redis::aio::ConnectionManager;
 use redis::{AsyncCommands, Client};
 
-use crate::domain::cache::{Cache, CacheExt};
+use crate::domain::cache::Cache;
 use crate::domain::DomainError;
 
 /// Configuration for Redis cache
@@ -327,6 +327,7 @@ impl Cache for RedisCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::cache::CacheExt;
 
     // Note: These tests require a running Redis instance
     // Run with: cargo test --features redis-tests -- --ignored

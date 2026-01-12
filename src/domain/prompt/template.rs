@@ -162,6 +162,7 @@ impl PromptTemplate {
 }
 
 /// Convenience function to render a template string directly
+#[allow(dead_code)]
 pub fn render_template(
     template: &str,
     values: &HashMap<String, String>,
@@ -171,6 +172,7 @@ pub fn render_template(
 }
 
 /// Extract variable names from a template string
+#[allow(dead_code)]
 pub fn extract_variables(template: &str) -> Vec<PromptVariable> {
     match PromptTemplate::parse(template) {
         Ok(t) => t.variables,

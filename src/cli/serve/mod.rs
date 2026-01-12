@@ -2,42 +2,86 @@
 
 use std::net::SocketAddr;
 
+use axum::middleware;
 use axum::response::Redirect;
 use axum::routing::get;
 use axum::Router;
 use tokio::net::TcpListener;
+use tokio::signal;
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::info;
 
+use crate::api::middleware::{logging_middleware, metrics_middleware, security_headers_middleware};
 use crate::api::state::AppState;
-use crate::api::{admin, health, v1};
+use crate::api::{admin, auth, health, v1};
 use crate::config::AppConfig;
 use crate::infrastructure::logging;
+use crate::infrastructure::observability::{
+    create_metrics_router, init_metrics, init_tracing, shutdown_tracing, PrometheusMetrics,
+};
 
 /// Run the combined API + UI server
 pub async fn run() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
 
     let config = AppConfig::load().unwrap_or_default();
-    init_logging(&config);
+    init_observability(&config);
 
-    let state = crate::create_app_state().await?;
-    let app = create_router_with_ui(state);
+    let state = crate::create_app_state_with_config(&config).await?;
+    let metrics = init_metrics(&config.observability.metrics);
+    let app = create_router_with_ui(state, metrics);
 
     let addr = build_socket_addr(&config)?;
     info!("Starting server (API + UI) on {}", addr);
 
     let listener = TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+
+    shutdown_tracing();
+    info!("Server shutdown complete");
 
     Ok(())
 }
 
-fn init_logging(config: &AppConfig) {
-    logging::init_logging(&logging::LoggingConfig {
-        level: config.logging.level.clone(),
-        format: config.logging.format.clone(),
-    });
+fn init_observability(config: &AppConfig) {
+    init_tracing(
+        &logging::LoggingConfig {
+            level: config.logging.level.clone(),
+            format: config.logging.format.clone(),
+        },
+        &config.observability.tracing,
+    );
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {
+            info!("Received Ctrl+C, initiating graceful shutdown");
+        }
+        _ = terminate => {
+            info!("Received SIGTERM, initiating graceful shutdown");
+        }
+    }
 }
 
 fn build_socket_addr(config: &AppConfig) -> anyhow::Result<SocketAddr> {
@@ -48,17 +92,19 @@ fn build_socket_addr(config: &AppConfig) -> anyhow::Result<SocketAddr> {
 }
 
 /// Create router with both API and UI endpoints
-fn create_router_with_ui(state: AppState) -> Router {
-    Router::new()
+fn create_router_with_ui(state: AppState, metrics: Option<PrometheusMetrics>) -> Router {
+    let mut router = Router::new()
         // Health endpoints
         .route("/health", get(health::health_check))
         .route("/ready", get(health::ready_check))
         .route("/live", get(health::live_check))
+        // Authentication endpoints
+        .nest("/auth", auth::create_auth_router())
         // OpenAI-compatible v1 API
         .nest("/v1", v1::create_v1_router())
-        // Admin API (also exposed at /api for UI consumption)
+        // Admin API (also exposed at /api/v1 for UI consumption)
         .nest("/admin", admin::create_admin_router())
-        .nest("/api", admin::create_admin_router())
+        .nest("/api/v1", admin::create_admin_router())
         // UI static files
         .nest_service(
             "/ui",
@@ -68,5 +114,15 @@ fn create_router_with_ui(state: AppState) -> Router {
         .route("/", get(|| async { Redirect::permanent("/ui/") }))
         // Add state and middleware
         .with_state(state)
-        .layer(tower_http::trace::TraceLayer::new_for_http())
+        .layer(middleware::from_fn(security_headers_middleware))
+        .layer(middleware::from_fn(logging_middleware))
+        .layer(middleware::from_fn(metrics_middleware))
+        .layer(tower_http::trace::TraceLayer::new_for_http());
+
+    // Add metrics endpoint if enabled
+    if let Some(m) = metrics {
+        router = router.merge(create_metrics_router(m));
+    }
+
+    router
 }

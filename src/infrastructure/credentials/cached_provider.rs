@@ -116,6 +116,7 @@ mod tests {
     }
 
     impl CountingProvider {
+        #[allow(dead_code)]
         fn new(inner: MockCredentialProvider) -> Self {
             Self {
                 inner,
@@ -123,6 +124,7 @@ mod tests {
             }
         }
 
+        #[allow(dead_code)]
         fn call_count(&self) -> usize {
             self.call_count.load(Ordering::SeqCst)
         }
@@ -149,12 +151,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_cached_provider_caches_credentials() {
-        use std::sync::Arc;
-
         let mock = MockCredentialProvider::new("mock")
             .with_credential(Credential::new(CredentialType::OpenAi, "sk-test".to_string()));
 
-        let call_count = Arc::new(AtomicUsize::new(0));
         let counting = CountingProvider {
             inner: mock,
             call_count: AtomicUsize::new(0),

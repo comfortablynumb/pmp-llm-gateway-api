@@ -112,16 +112,19 @@ impl CredentialProvider for ArcProvider {
 }
 
 /// Chain of credential providers that tries each in order
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct ChainedCredentialProvider {
     providers: Vec<Arc<dyn CredentialProvider>>,
 }
 
 impl ChainedCredentialProvider {
+    #[allow(dead_code)]
     pub fn new(providers: Vec<Arc<dyn CredentialProvider>>) -> Self {
         Self { providers }
     }
 
+    #[allow(dead_code)]
     pub fn builder() -> ChainedCredentialProviderBuilder {
         ChainedCredentialProviderBuilder::new()
     }
@@ -178,22 +181,26 @@ impl CredentialProvider for ChainedCredentialProvider {
 }
 
 /// Builder for ChainedCredentialProvider
+#[allow(dead_code)]
 pub struct ChainedCredentialProviderBuilder {
     providers: Vec<Arc<dyn CredentialProvider>>,
 }
 
 impl ChainedCredentialProviderBuilder {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self {
             providers: Vec::new(),
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_provider(mut self, provider: Arc<dyn CredentialProvider>) -> Self {
         self.providers.push(provider);
         self
     }
 
+    #[allow(dead_code)]
     pub fn build(self) -> ChainedCredentialProvider {
         ChainedCredentialProvider::new(self.providers)
     }

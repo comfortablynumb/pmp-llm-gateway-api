@@ -3,9 +3,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::domain::storage::Storage;
 use crate::domain::{
-    DomainError, ModelValidationError, Prompt, PromptId, PromptRepository, PromptTemplate,
-    TemplateError,
+    DomainError, ModelValidationError, Prompt, PromptId, PromptTemplate, TemplateError,
 };
 
 /// Request to create a new prompt
@@ -49,20 +49,20 @@ pub struct RenderedPrompt {
 
 /// Prompt service for CRUD and rendering operations
 #[derive(Debug)]
-pub struct PromptService<R: PromptRepository> {
-    repository: Arc<R>,
+pub struct PromptService<S: Storage<Prompt>> {
+    storage: Arc<S>,
 }
 
-impl<R: PromptRepository> PromptService<R> {
-    /// Create a new PromptService with the given repository
-    pub fn new(repository: Arc<R>) -> Self {
-        Self { repository }
+impl<S: Storage<Prompt>> PromptService<S> {
+    /// Create a new PromptService with the given storage
+    pub fn new(storage: Arc<S>) -> Self {
+        Self { storage }
     }
 
     /// Get a prompt by ID
     pub async fn get(&self, id: &str) -> Result<Option<Prompt>, DomainError> {
         let prompt_id = self.parse_prompt_id(id)?;
-        self.repository.get(&prompt_id).await
+        self.storage.get(&prompt_id).await
     }
 
     /// Get a prompt by ID, returning an error if not found
@@ -74,17 +74,19 @@ impl<R: PromptRepository> PromptService<R> {
 
     /// List all prompts
     pub async fn list(&self) -> Result<Vec<Prompt>, DomainError> {
-        self.repository.list().await
+        self.storage.list().await
     }
 
     /// List all enabled prompts
     pub async fn list_enabled(&self) -> Result<Vec<Prompt>, DomainError> {
-        self.repository.list_enabled().await
+        let prompts = self.storage.list().await?;
+        Ok(prompts.into_iter().filter(|p| p.is_enabled()).collect())
     }
 
     /// List prompts by tag
     pub async fn list_by_tag(&self, tag: &str) -> Result<Vec<Prompt>, DomainError> {
-        self.repository.list_by_tag(tag).await
+        let prompts = self.storage.list().await?;
+        Ok(prompts.into_iter().filter(|p| p.tags().contains(&tag.to_string())).collect())
     }
 
     /// Create a new prompt
@@ -92,7 +94,7 @@ impl<R: PromptRepository> PromptService<R> {
         let prompt_id = self.parse_prompt_id(&request.id)?;
 
         // Check for duplicate
-        if self.repository.exists(&prompt_id).await? {
+        if self.storage.exists(&prompt_id).await? {
             return Err(DomainError::conflict(format!(
                 "Prompt with ID '{}' already exists",
                 request.id
@@ -115,7 +117,7 @@ impl<R: PromptRepository> PromptService<R> {
 
         prompt = prompt.with_tags(request.tags).with_enabled(request.enabled);
 
-        self.repository.create(prompt).await
+        self.storage.create(prompt).await
     }
 
     /// Update an existing prompt
@@ -128,7 +130,7 @@ impl<R: PromptRepository> PromptService<R> {
 
         // Get existing prompt
         let mut prompt = self
-            .repository
+            .storage
             .get(&prompt_id)
             .await?
             .ok_or_else(|| DomainError::not_found(format!("Prompt '{}' not found", id)))?;
@@ -156,13 +158,13 @@ impl<R: PromptRepository> PromptService<R> {
             prompt.set_enabled(enabled);
         }
 
-        self.repository.update(prompt).await
+        self.storage.update(prompt).await
     }
 
     /// Delete a prompt by ID
     pub async fn delete(&self, id: &str) -> Result<bool, DomainError> {
         let prompt_id = self.parse_prompt_id(id)?;
-        self.repository.delete(&prompt_id).await
+        self.storage.delete(&prompt_id).await
     }
 
     /// Render a prompt with variables
@@ -232,7 +234,7 @@ impl<R: PromptRepository> PromptService<R> {
         let prompt_id = self.parse_prompt_id(id)?;
 
         let mut prompt = self
-            .repository
+            .storage
             .get(&prompt_id)
             .await?
             .ok_or_else(|| DomainError::not_found(format!("Prompt '{}' not found", id)))?;
@@ -244,7 +246,7 @@ impl<R: PromptRepository> PromptService<R> {
             )));
         }
 
-        self.repository.update(prompt).await
+        self.storage.update(prompt).await
     }
 
     /// Enable a prompt
@@ -309,10 +311,10 @@ impl<R: PromptRepository> PromptService<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::prompt::mock::MockPromptRepository;
+    use crate::domain::storage::mock::MockStorage;
 
-    fn create_service() -> PromptService<MockPromptRepository> {
-        PromptService::new(Arc::new(MockPromptRepository::new()))
+    fn create_service() -> PromptService<MockStorage<Prompt>> {
+        PromptService::new(Arc::new(MockStorage::new()))
     }
 
     fn create_request(id: &str) -> CreatePromptRequest {

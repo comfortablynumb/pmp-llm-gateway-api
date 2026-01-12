@@ -113,6 +113,11 @@ impl ApiError {
         Self::new(StatusCode::NOT_FOUND, ApiErrorType::NotFoundError, message)
     }
 
+    /// Conflict error (resource already exists or cannot be modified)
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::CONFLICT, ApiErrorType::InvalidRequestError, message)
+    }
+
     /// Rate limit error
     pub fn rate_limited(message: impl Into<String>) -> Self {
         Self::new(StatusCode::TOO_MANY_REQUESTS, ApiErrorType::RateLimitError, message)

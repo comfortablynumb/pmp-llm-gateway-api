@@ -10,6 +10,7 @@ use crate::domain::DomainError;
 
 /// Cache entry metadata
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct CacheEntryMeta {
     /// Time-to-live remaining (if known)
     pub ttl_remaining: Option<Duration>,

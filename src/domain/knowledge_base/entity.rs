@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use super::validation::{validate_knowledge_base_id, KnowledgeBaseValidationError};
 use super::MetadataFilter;
+use crate::domain::storage::{StorageEntity, StorageKey};
 
 /// Knowledge base identifier - alphanumeric + hyphens, max 50 characters
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -44,6 +45,20 @@ impl From<KnowledgeBaseId> for String {
 impl std::fmt::Display for KnowledgeBaseId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+impl StorageKey for KnowledgeBaseId {
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl StorageEntity for KnowledgeBase {
+    type Key = KnowledgeBaseId;
+
+    fn key(&self) -> &Self::Key {
+        &self.id
     }
 }
 

@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use super::error::WorkflowError;
 use super::step_types::WorkflowStepType;
+use crate::domain::storage::{StorageEntity, StorageKey};
 
 /// Maximum length for workflow IDs
 pub const MAX_ID_LENGTH: usize = 50;
@@ -58,6 +59,12 @@ impl fmt::Display for WorkflowId {
 
 impl AsRef<str> for WorkflowId {
     fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl StorageKey for WorkflowId {
+    fn as_str(&self) -> &str {
         &self.0
     }
 }
@@ -346,6 +353,14 @@ impl Workflow {
     }
 }
 
+impl StorageEntity for Workflow {
+    type Key = WorkflowId;
+
+    fn key(&self) -> &Self::Key {
+        &self.id
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,7 +425,7 @@ mod tests {
             .with_step(WorkflowStep::new(
                 "step1",
                 WorkflowStepType::ChatCompletion(
-                    ChatCompletionStep::new("gpt-4", "Hello")
+                    ChatCompletionStep::new("gpt-4", "sys-prompt", "Hello")
                 ),
             ))
             .with_step(WorkflowStep::new(
@@ -433,7 +448,7 @@ mod tests {
     fn test_workflow_step_builder() {
         let step = WorkflowStep::new(
             "my-step",
-            WorkflowStepType::ChatCompletion(ChatCompletionStep::new("gpt-4", "test")),
+            WorkflowStepType::ChatCompletion(ChatCompletionStep::new("gpt-4", "sys-prompt", "test")),
         )
         .with_on_error(OnErrorAction::SkipStep)
         .with_timeout_ms(30000);
@@ -464,7 +479,7 @@ mod tests {
 
         workflow.set_steps(vec![WorkflowStep::new(
             "new-step",
-            WorkflowStepType::ChatCompletion(ChatCompletionStep::new("gpt-4", "test")),
+            WorkflowStepType::ChatCompletion(ChatCompletionStep::new("gpt-4", "sys-prompt", "test")),
         )]);
 
         assert_eq!(workflow.version(), 2);
@@ -477,7 +492,7 @@ mod tests {
             .with_description("Test description")
             .with_step(WorkflowStep::new(
                 "chat",
-                WorkflowStepType::ChatCompletion(ChatCompletionStep::new("gpt-4", "Hello")),
+                WorkflowStepType::ChatCompletion(ChatCompletionStep::new("gpt-4", "sys-prompt", "Hello")),
             ));
 
         let json = serde_json::to_string_pretty(&workflow).unwrap();

@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use async_trait::async_trait;
 use tokio::sync::RwLock;
@@ -453,6 +453,7 @@ mod tests {
     use super::*;
     use crate::domain::{FinishReason, Message, Usage};
     use std::sync::atomic::AtomicUsize;
+    use std::time::Duration;
 
     // Mock provider resolver for testing
     struct MockResolver {
@@ -475,6 +476,7 @@ mod tests {
                 .insert(model_id.to_string(), response);
         }
 
+        #[allow(dead_code)]
         fn call_count(&self) -> usize {
             self.call_count.load(Ordering::Relaxed)
         }

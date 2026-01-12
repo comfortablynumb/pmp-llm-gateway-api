@@ -59,7 +59,8 @@ Content-Type: application/json
     "id": "custom-gpt4-turbo",
     "name": "Custom GPT-4 Turbo",
     "provider": "openai",
-    "provider_model": "gpt-4-turbo-preview"
+    "provider_model": "gpt-4-turbo-preview",
+    "credential_id": "openai-default"
 }
 HTTP 200
 [Asserts]
@@ -99,7 +100,8 @@ Content-Type: application/json
     "id": "custom-claude",
     "name": "Custom Claude",
     "provider": "anthropic",
-    "provider_model": "claude-3-haiku-20240307"
+    "provider_model": "claude-3-haiku-20240307",
+    "credential_id": "anthropic-default"
 }
 HTTP 200
 [Asserts]
@@ -111,6 +113,21 @@ DELETE {{app_url}}/admin/models/custom-claude
 Authorization: Bearer pk_test_{{admin_api_key}}
 HTTP 200
 
+# Create Azure credential for testing
+POST {{app_url}}/admin/credentials
+Authorization: Bearer pk_test_{{admin_api_key}}
+Content-Type: application/json
+{
+    "id": "azure-test-credential",
+    "name": "Azure Test Credential",
+    "credential_type": "azure_openai",
+    "api_key": "test-azure-api-key",
+    "endpoint": "https://test.openai.azure.com"
+}
+HTTP 200
+[Asserts]
+jsonpath "$.id" == "azure-test-credential"
+
 # Create an Azure OpenAI model
 POST {{app_url}}/admin/models
 Authorization: Bearer pk_test_{{admin_api_key}}
@@ -119,14 +136,20 @@ Content-Type: application/json
     "id": "azure-gpt4",
     "name": "Azure GPT-4",
     "provider": "azure_openai",
-    "provider_model": "gpt-4-deployment"
+    "provider_model": "gpt-4-deployment",
+    "credential_id": "azure-test-credential"
 }
 HTTP 200
 [Asserts]
 jsonpath "$.id" == "azure-gpt4"
 jsonpath "$.provider" == "azure_openai"
 
-# Clean up
+# Clean up model first (before credential)
 DELETE {{app_url}}/admin/models/azure-gpt4
+Authorization: Bearer pk_test_{{admin_api_key}}
+HTTP 200
+
+# Clean up credential
+DELETE {{app_url}}/admin/credentials/azure-test-credential
 Authorization: Bearer pk_test_{{admin_api_key}}
 HTTP 200

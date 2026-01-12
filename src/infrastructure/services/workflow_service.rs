@@ -2,8 +2,9 @@
 
 use std::sync::Arc;
 
+use crate::domain::storage::Storage;
 use crate::domain::{
-    DomainError, Workflow, WorkflowExecutor, WorkflowId, WorkflowRepository, WorkflowResult,
+    DomainError, Workflow, WorkflowExecutor, WorkflowId, WorkflowResult,
     WorkflowStep, WorkflowStepType,
 };
 
@@ -98,32 +99,38 @@ impl UpdateWorkflowRequest {
 }
 
 /// Workflow service for CRUD operations
-#[derive(Debug)]
-pub struct WorkflowService<R: WorkflowRepository, E: WorkflowExecutor> {
-    repository: Arc<R>,
-    executor: Arc<E>,
+pub struct WorkflowService {
+    storage: Arc<dyn Storage<Workflow>>,
+    executor: Arc<dyn WorkflowExecutor>,
 }
 
-impl<R: WorkflowRepository, E: WorkflowExecutor> WorkflowService<R, E> {
+impl std::fmt::Debug for WorkflowService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WorkflowService").finish()
+    }
+}
+
+impl WorkflowService {
     /// Create a new workflow service
-    pub fn new(repository: Arc<R>, executor: Arc<E>) -> Self {
-        Self { repository, executor }
+    pub fn new(storage: Arc<dyn Storage<Workflow>>, executor: Arc<dyn WorkflowExecutor>) -> Self {
+        Self { storage, executor }
     }
 
     /// Get a workflow by ID
     pub async fn get(&self, id: &str) -> Result<Option<Workflow>, DomainError> {
         let workflow_id = self.parse_id(id)?;
-        self.repository.get(&workflow_id).await
+        self.storage.get(&workflow_id).await
     }
 
     /// List all workflows
     pub async fn list(&self) -> Result<Vec<Workflow>, DomainError> {
-        self.repository.list().await
+        self.storage.list().await
     }
 
     /// List only enabled workflows
     pub async fn list_enabled(&self) -> Result<Vec<Workflow>, DomainError> {
-        self.repository.list_enabled().await
+        let workflows = self.storage.list().await?;
+        Ok(workflows.into_iter().filter(|w| w.is_enabled()).collect())
     }
 
     /// Create a new workflow
@@ -131,7 +138,7 @@ impl<R: WorkflowRepository, E: WorkflowExecutor> WorkflowService<R, E> {
         let workflow_id = self.parse_id(&request.id)?;
 
         // Check for duplicate
-        if self.repository.exists(&workflow_id).await? {
+        if self.storage.exists(&workflow_id).await? {
             return Err(DomainError::conflict(format!(
                 "Workflow '{}' already exists",
                 request.id
@@ -154,7 +161,7 @@ impl<R: WorkflowRepository, E: WorkflowExecutor> WorkflowService<R, E> {
 
         workflow = workflow.with_steps(request.steps).with_enabled(request.enabled);
 
-        self.repository.create(workflow).await
+        self.storage.create(workflow).await
     }
 
     /// Update an existing workflow
@@ -166,7 +173,7 @@ impl<R: WorkflowRepository, E: WorkflowExecutor> WorkflowService<R, E> {
         let workflow_id = self.parse_id(id)?;
 
         let mut workflow = self
-            .repository
+            .storage
             .get(&workflow_id)
             .await?
             .ok_or_else(|| DomainError::not_found(format!("Workflow '{}' not found", id)))?;
@@ -193,19 +200,19 @@ impl<R: WorkflowRepository, E: WorkflowExecutor> WorkflowService<R, E> {
             workflow.set_enabled(enabled);
         }
 
-        self.repository.update(workflow).await
+        self.storage.update(workflow).await
     }
 
     /// Delete a workflow
     pub async fn delete(&self, id: &str) -> Result<bool, DomainError> {
         let workflow_id = self.parse_id(id)?;
-        self.repository.delete(&workflow_id).await
+        self.storage.delete(&workflow_id).await
     }
 
     /// Check if a workflow exists
     pub async fn exists(&self, id: &str) -> Result<bool, DomainError> {
         let workflow_id = self.parse_id(id)?;
-        self.repository.exists(&workflow_id).await
+        self.storage.exists(&workflow_id).await
     }
 
     /// Enable a workflow
@@ -225,7 +232,7 @@ impl<R: WorkflowRepository, E: WorkflowExecutor> WorkflowService<R, E> {
         let workflow_id = self.parse_id(id)?;
 
         let workflow = self
-            .repository
+            .storage
             .get(&workflow_id)
             .await?
             .ok_or_else(|| DomainError::not_found(format!("Workflow '{}' not found", id)))?;
@@ -250,6 +257,13 @@ impl<R: WorkflowRepository, E: WorkflowExecutor> WorkflowService<R, E> {
 
     /// Validate workflow steps
     fn validate_steps(&self, steps: &[WorkflowStep]) -> Result<(), DomainError> {
+        // Check for empty steps
+        if steps.is_empty() {
+            return Err(DomainError::validation(
+                "Workflow must have at least one step",
+            ));
+        }
+
         // Check for unique step names
         let mut seen_names = std::collections::HashSet::new();
 
@@ -288,16 +302,39 @@ impl<R: WorkflowRepository, E: WorkflowExecutor> WorkflowService<R, E> {
                     return Err(DomainError::validation("ChatCompletion step requires model_id"));
                 }
 
-                if chat_step.user_message.is_empty() && chat_step.prompt_id.is_none() {
+                // model_id must be configured directly, not as a variable
+                if chat_step.model_id.contains("${") {
                     return Err(DomainError::validation(
-                        "ChatCompletion step requires user_message or prompt_id",
+                        "ChatCompletion step model_id must be configured directly, not as input variable",
                     ));
+                }
+
+                if chat_step.prompt_id.is_empty() {
+                    return Err(DomainError::validation("ChatCompletion step requires prompt_id"));
+                }
+
+                // prompt_id must be configured directly, not as a variable
+                if chat_step.prompt_id.contains("${") {
+                    return Err(DomainError::validation(
+                        "ChatCompletion step prompt_id must be configured directly, not as input variable",
+                    ));
+                }
+
+                if chat_step.user_message.is_empty() {
+                    return Err(DomainError::validation("ChatCompletion step requires user_message"));
                 }
             }
             WorkflowStepType::KnowledgeBaseSearch(kb_step) => {
                 if kb_step.knowledge_base_id.is_empty() {
                     return Err(DomainError::validation(
                         "KnowledgeBaseSearch step requires knowledge_base_id",
+                    ));
+                }
+
+                // knowledge_base_id must be configured directly, not as a variable
+                if kb_step.knowledge_base_id.contains("${") {
+                    return Err(DomainError::validation(
+                        "KnowledgeBaseSearch step knowledge_base_id must be configured directly, not as input variable",
                     ));
                 }
 
@@ -314,6 +351,28 @@ impl<R: WorkflowRepository, E: WorkflowExecutor> WorkflowService<R, E> {
 
                 if crag_step.query.is_empty() {
                     return Err(DomainError::validation("CragScoring step requires query"));
+                }
+
+                if crag_step.model_id.is_empty() {
+                    return Err(DomainError::validation("CragScoring step requires model_id"));
+                }
+
+                // model_id must be configured directly, not as a variable
+                if crag_step.model_id.contains("${") {
+                    return Err(DomainError::validation(
+                        "CragScoring step model_id must be configured directly, not as input variable",
+                    ));
+                }
+
+                if crag_step.prompt_id.is_empty() {
+                    return Err(DomainError::validation("CragScoring step requires prompt_id"));
+                }
+
+                // prompt_id must be configured directly, not as a variable
+                if crag_step.prompt_id.contains("${") {
+                    return Err(DomainError::validation(
+                        "CragScoring step prompt_id must be configured directly, not as input variable",
+                    ));
                 }
 
                 if !(0.0..=1.0).contains(&crag_step.threshold) {
@@ -335,6 +394,29 @@ impl<R: WorkflowRepository, E: WorkflowExecutor> WorkflowService<R, E> {
                     }
                 }
             }
+            WorkflowStepType::HttpRequest(http_step) => {
+                if http_step.external_api_id.is_empty() {
+                    return Err(DomainError::validation(
+                        "HttpRequest step requires external_api_id",
+                    ));
+                }
+
+                // external_api_id must be configured directly, not as a variable
+                if http_step.external_api_id.contains("${") {
+                    return Err(DomainError::validation(
+                        "HttpRequest step external_api_id must be configured directly, not as input variable",
+                    ));
+                }
+
+                // credential_id must be configured directly if provided
+                if let Some(ref cred_id) = http_step.credential_id {
+                    if cred_id.contains("${") {
+                        return Err(DomainError::validation(
+                            "HttpRequest step credential_id must be configured directly, not as input variable",
+                        ));
+                    }
+                }
+            }
         }
 
         Ok(())
@@ -344,7 +426,7 @@ impl<R: WorkflowRepository, E: WorkflowExecutor> WorkflowService<R, E> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::workflow::repository::mock::MockWorkflowRepository;
+    use crate::domain::storage::mock::MockStorage;
     use crate::domain::workflow::{
         ChatCompletionStep, Condition, ConditionalAction, ConditionalStep, ConditionOperator,
         CragScoringStep, KnowledgeBaseSearchStep, StepExecutionResult, WorkflowError,
@@ -377,15 +459,19 @@ mod tests {
     fn create_chat_step(name: &str) -> WorkflowStep {
         WorkflowStep::new(
             name,
-            WorkflowStepType::ChatCompletion(ChatCompletionStep::new("gpt-4", "Hello")),
+            WorkflowStepType::ChatCompletion(ChatCompletionStep::new(
+                "gpt-4",
+                "system-prompt",
+                "Hello",
+            )),
         )
     }
 
     #[tokio::test]
     async fn test_create_workflow() {
-        let repo = Arc::new(MockWorkflowRepository::new());
+        let storage = Arc::new(MockStorage::<Workflow>::new());
         let executor = create_mock_executor();
-        let service = WorkflowService::new(repo, executor);
+        let service = WorkflowService::new(storage, executor);
 
         let request = CreateWorkflowRequest::new("test-workflow", "Test Workflow")
             .with_description("A test workflow")
@@ -402,9 +488,9 @@ mod tests {
     #[tokio::test]
     async fn test_create_duplicate() {
         let existing = Workflow::new(WorkflowId::new("existing").unwrap(), "Existing");
-        let repo = Arc::new(MockWorkflowRepository::new().with_workflow(existing));
+        let storage = Arc::new(MockStorage::<Workflow>::new().with_entity(existing));
         let executor = create_mock_executor();
-        let service = WorkflowService::new(repo, executor);
+        let service = WorkflowService::new(storage, executor);
 
         let request = CreateWorkflowRequest::new("existing", "New");
         let result = service.create(request).await;
@@ -418,9 +504,9 @@ mod tests {
         let workflow =
             Workflow::new(WorkflowId::new("test").unwrap(), "Test").with_step(create_chat_step("s1"));
 
-        let repo = Arc::new(MockWorkflowRepository::new().with_workflow(workflow));
+        let storage = Arc::new(MockStorage::<Workflow>::new().with_entity(workflow));
         let executor = create_mock_executor();
-        let service = WorkflowService::new(repo, executor);
+        let service = WorkflowService::new(storage, executor);
 
         let retrieved = service.get("test").await.unwrap();
         assert!(retrieved.is_some());
@@ -435,9 +521,9 @@ mod tests {
         let workflow = Workflow::new(WorkflowId::new("test").unwrap(), "Original")
             .with_step(create_chat_step("s1"));
 
-        let repo = Arc::new(MockWorkflowRepository::new().with_workflow(workflow));
+        let storage = Arc::new(MockStorage::<Workflow>::new().with_entity(workflow));
         let executor = create_mock_executor();
-        let service = WorkflowService::new(repo, executor);
+        let service = WorkflowService::new(storage, executor);
 
         let request = UpdateWorkflowRequest::new()
             .with_name("Updated")
@@ -451,9 +537,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_not_found() {
-        let repo = Arc::new(MockWorkflowRepository::new());
+        let storage = Arc::new(MockStorage::<Workflow>::new());
         let executor = create_mock_executor();
-        let service = WorkflowService::new(repo, executor);
+        let service = WorkflowService::new(storage, executor);
 
         let request = UpdateWorkflowRequest::new().with_name("New");
         let result = service.update("nonexistent", request).await;
@@ -465,9 +551,9 @@ mod tests {
     #[tokio::test]
     async fn test_delete_workflow() {
         let workflow = Workflow::new(WorkflowId::new("test").unwrap(), "Test");
-        let repo = Arc::new(MockWorkflowRepository::new().with_workflow(workflow));
+        let storage = Arc::new(MockStorage::<Workflow>::new().with_entity(workflow));
         let executor = create_mock_executor();
-        let service = WorkflowService::new(repo, executor);
+        let service = WorkflowService::new(storage, executor);
 
         let deleted = service.delete("test").await.unwrap();
         assert!(deleted);
@@ -480,9 +566,9 @@ mod tests {
     async fn test_enable_disable() {
         let workflow = Workflow::new(WorkflowId::new("test").unwrap(), "Test").with_enabled(true);
 
-        let repo = Arc::new(MockWorkflowRepository::new().with_workflow(workflow));
+        let storage = Arc::new(MockStorage::<Workflow>::new().with_entity(workflow));
         let executor = create_mock_executor();
-        let service = WorkflowService::new(repo, executor);
+        let service = WorkflowService::new(storage, executor);
 
         let disabled = service.disable("test").await.unwrap();
         assert!(!disabled.is_enabled());
@@ -493,23 +579,58 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_workflows() {
-        let repo = Arc::new(
-            MockWorkflowRepository::new()
-                .with_workflow(Workflow::new(WorkflowId::new("w1").unwrap(), "W1"))
-                .with_workflow(Workflow::new(WorkflowId::new("w2").unwrap(), "W2")),
+        let storage = Arc::new(
+            MockStorage::<Workflow>::new()
+                .with_entity(Workflow::new(WorkflowId::new("w1").unwrap(), "W1"))
+                .with_entity(Workflow::new(WorkflowId::new("w2").unwrap(), "W2")),
         );
         let executor = create_mock_executor();
-        let service = WorkflowService::new(repo, executor);
+        let service = WorkflowService::new(storage, executor);
 
         let workflows = service.list().await.unwrap();
         assert_eq!(workflows.len(), 2);
     }
 
     #[tokio::test]
-    async fn test_validate_duplicate_step_names() {
-        let repo = Arc::new(MockWorkflowRepository::new());
+    async fn test_validate_empty_steps_create() {
+        let storage = Arc::new(MockStorage::<Workflow>::new());
         let executor = create_mock_executor();
-        let service = WorkflowService::new(repo, executor);
+        let service = WorkflowService::new(storage, executor);
+
+        let request = CreateWorkflowRequest::new("test", "Test"); // No steps
+
+        let result = service.create(request).await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("must have at least one step"));
+    }
+
+    #[tokio::test]
+    async fn test_validate_empty_steps_update() {
+        let workflow = Workflow::new(WorkflowId::new("test").unwrap(), "Test")
+            .with_step(create_chat_step("s1"));
+        let storage = Arc::new(MockStorage::<Workflow>::new().with_entity(workflow));
+        let executor = create_mock_executor();
+        let service = WorkflowService::new(storage, executor);
+
+        // Try to update with empty steps
+        let request = UpdateWorkflowRequest::new().with_steps(vec![]);
+
+        let result = service.update("test", request).await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("must have at least one step"));
+    }
+
+    #[tokio::test]
+    async fn test_validate_duplicate_step_names() {
+        let storage = Arc::new(MockStorage::<Workflow>::new());
+        let executor = create_mock_executor();
+        let service = WorkflowService::new(storage, executor);
 
         let request = CreateWorkflowRequest::new("test", "Test")
             .with_step(create_chat_step("duplicate"))
@@ -522,26 +643,46 @@ mod tests {
 
     #[tokio::test]
     async fn test_validate_chat_step() {
-        let repo = Arc::new(MockWorkflowRepository::new());
+        let storage = Arc::new(MockStorage::<Workflow>::new());
         let executor = create_mock_executor();
-        let service = WorkflowService::new(repo, executor);
+        let service = WorkflowService::new(storage, executor);
 
         // Missing model_id
         let step = WorkflowStep::new(
             "test",
-            WorkflowStepType::ChatCompletion(ChatCompletionStep::new("", "Hello")),
+            WorkflowStepType::ChatCompletion(ChatCompletionStep::new("", "sys-prompt", "Hello")),
         );
         let request = CreateWorkflowRequest::new("test", "Test").with_step(step);
         let result = service.create(request).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("requires model_id"));
+
+        // Missing prompt_id
+        let step = WorkflowStep::new(
+            "test",
+            WorkflowStepType::ChatCompletion(ChatCompletionStep::new("gpt-4", "", "Hello")),
+        );
+        let request = CreateWorkflowRequest::new("test2", "Test").with_step(step);
+        let result = service.create(request).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("requires prompt_id"));
+
+        // Missing user_message
+        let step = WorkflowStep::new(
+            "test",
+            WorkflowStepType::ChatCompletion(ChatCompletionStep::new("gpt-4", "sys-prompt", "")),
+        );
+        let request = CreateWorkflowRequest::new("test3", "Test").with_step(step);
+        let result = service.create(request).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("requires user_message"));
     }
 
     #[tokio::test]
     async fn test_validate_kb_step() {
-        let repo = Arc::new(MockWorkflowRepository::new());
+        let storage = Arc::new(MockStorage::<Workflow>::new());
         let executor = create_mock_executor();
-        let service = WorkflowService::new(repo, executor);
+        let service = WorkflowService::new(storage, executor);
 
         let step = WorkflowStep::new(
             "test",
@@ -557,18 +698,89 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_validate_crag_step() {
-        let repo = Arc::new(MockWorkflowRepository::new());
+    async fn test_validate_resource_ids_not_variables() {
+        let storage = Arc::new(MockStorage::<Workflow>::new());
         let executor = create_mock_executor();
-        let service = WorkflowService::new(repo, executor);
+        let service = WorkflowService::new(storage, executor);
 
-        // Invalid threshold
-        let mut step = CragScoringStep::new("${step:search:docs}", "query");
-        step.threshold = 1.5; // Invalid
+        // KB step with variable reference in knowledge_base_id
+        let step = WorkflowStep::new(
+            "test",
+            WorkflowStepType::KnowledgeBaseSearch(KnowledgeBaseSearchStep::new(
+                "${request:kb_id}",
+                "query",
+            )),
+        );
+        let request = CreateWorkflowRequest::new("test1", "Test").with_step(step);
+        let result = service.create(request).await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("must be configured directly"));
 
+        // Chat step with variable reference in model_id
+        let step = WorkflowStep::new(
+            "test",
+            WorkflowStepType::ChatCompletion(ChatCompletionStep::new(
+                "${request:model}",
+                "prompt-id",
+                "Hello",
+            )),
+        );
+        let request = CreateWorkflowRequest::new("test2", "Test").with_step(step);
+        let result = service.create(request).await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("model_id must be configured directly"));
+
+        // Chat step with variable reference in prompt_id
+        let step = WorkflowStep::new(
+            "test",
+            WorkflowStepType::ChatCompletion(ChatCompletionStep::new(
+                "gpt-4o",
+                "${request:prompt}",
+                "Hello",
+            )),
+        );
+        let request = CreateWorkflowRequest::new("test3", "Test").with_step(step);
+        let result = service.create(request).await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("prompt_id must be configured directly"));
+    }
+
+    #[tokio::test]
+    async fn test_validate_crag_step() {
+        let storage = Arc::new(MockStorage::<Workflow>::new());
+        let executor = create_mock_executor();
+        let service = WorkflowService::new(storage, executor);
+
+        // Missing model_id
+        let step = CragScoringStep::new("${step:search:docs}", "query", "", "crag-prompt");
         let request = CreateWorkflowRequest::new("test", "Test")
             .with_step(WorkflowStep::new("test", WorkflowStepType::CragScoring(step)));
+        let result = service.create(request).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("requires model_id"));
 
+        // Missing prompt_id
+        let step = CragScoringStep::new("${step:search:docs}", "query", "gpt-4o", "");
+        let request = CreateWorkflowRequest::new("test2", "Test")
+            .with_step(WorkflowStep::new("test", WorkflowStepType::CragScoring(step)));
+        let result = service.create(request).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("requires prompt_id"));
+
+        // Invalid threshold
+        let mut step = CragScoringStep::new("${step:search:docs}", "query", "gpt-4o", "crag-prompt");
+        step.threshold = 1.5; // Invalid
+        let request = CreateWorkflowRequest::new("test3", "Test")
+            .with_step(WorkflowStep::new("test", WorkflowStepType::CragScoring(step)));
         let result = service.create(request).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("threshold must be"));
@@ -576,9 +788,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_validate_conditional_step() {
-        let repo = Arc::new(MockWorkflowRepository::new());
+        let storage = Arc::new(MockStorage::<Workflow>::new());
         let executor = create_mock_executor();
-        let service = WorkflowService::new(repo, executor);
+        let service = WorkflowService::new(storage, executor);
 
         // Empty conditions
         let step = WorkflowStep::new(
@@ -604,9 +816,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_workflow_id() {
-        let repo = Arc::new(MockWorkflowRepository::new());
+        let storage = Arc::new(MockStorage::<Workflow>::new());
         let executor = create_mock_executor();
-        let service = WorkflowService::new(repo, executor);
+        let service = WorkflowService::new(storage, executor);
 
         let request = CreateWorkflowRequest::new("-invalid-id-", "Test");
         let result = service.create(request).await;
@@ -619,9 +831,9 @@ mod tests {
             .with_step(create_chat_step("s1"))
             .with_enabled(true);
 
-        let repo = Arc::new(MockWorkflowRepository::new().with_workflow(workflow));
+        let storage = Arc::new(MockStorage::<Workflow>::new().with_entity(workflow));
         let executor = create_mock_executor();
-        let service = WorkflowService::new(repo, executor);
+        let service = WorkflowService::new(storage, executor);
 
         let result = service.execute("test", serde_json::json!({})).await.unwrap();
         assert!(result.success);
@@ -633,9 +845,9 @@ mod tests {
             .with_step(create_chat_step("s1"))
             .with_enabled(false);
 
-        let repo = Arc::new(MockWorkflowRepository::new().with_workflow(workflow));
+        let storage = Arc::new(MockStorage::<Workflow>::new().with_entity(workflow));
         let executor = create_mock_executor();
-        let service = WorkflowService::new(repo, executor);
+        let service = WorkflowService::new(storage, executor);
 
         let result = service.execute("test", serde_json::json!({})).await;
         assert!(result.is_err());
@@ -644,9 +856,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_not_found() {
-        let repo = Arc::new(MockWorkflowRepository::new());
+        let storage = Arc::new(MockStorage::<Workflow>::new());
         let executor = create_mock_executor();
-        let service = WorkflowService::new(repo, executor);
+        let service = WorkflowService::new(storage, executor);
 
         let result = service.execute("nonexistent", serde_json::json!({})).await;
         assert!(result.is_err());

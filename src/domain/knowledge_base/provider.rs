@@ -4,9 +4,13 @@ use std::fmt::Debug;
 
 use async_trait::async_trait;
 
+use super::document::{
+    CreateDocumentRequest, DocumentChunk, DocumentSummary, KnowledgeBaseDocument,
+};
 use super::entity::{KnowledgeBaseId, SearchResult};
 use super::filter::MetadataFilter;
 use crate::domain::error::DomainError;
+use uuid::Uuid;
 
 /// Document to be added to a knowledge base
 #[derive(Debug, Clone)]
@@ -194,6 +198,55 @@ pub trait KnowledgeBaseProvider: Send + Sync + Debug {
 
     /// Get the total document count in the knowledge base
     async fn document_count(&self) -> Result<usize, DomainError>;
+
+    /// List all documents with a given source
+    async fn list_by_source(&self, source: &str) -> Result<Vec<SearchResult>, DomainError>;
+
+    /// Delete all documents with a given source
+    async fn delete_by_source(&self, source: &str) -> Result<DeleteDocumentsResult, DomainError>;
+
+    /// List all unique sources in the knowledge base
+    async fn list_sources(&self) -> Result<Vec<SourceInfo>, DomainError>;
+
+    /// Ensure the storage schema exists (create tables/indexes)
+    async fn ensure_schema(&self) -> Result<(), DomainError>;
+
+    // ========================================================================
+    // New document-based methods (for the new schema)
+    // ========================================================================
+
+    /// Create a document with its chunks (new schema)
+    async fn create_document(
+        &self,
+        request: CreateDocumentRequest,
+    ) -> Result<KnowledgeBaseDocument, DomainError>;
+
+    /// Get a document by ID (new schema)
+    async fn get_document_by_id(&self, id: Uuid) -> Result<Option<KnowledgeBaseDocument>, DomainError>;
+
+    /// List all documents in the knowledge base (new schema)
+    async fn list_documents(&self) -> Result<Vec<DocumentSummary>, DomainError>;
+
+    /// Get chunks for a document (new schema)
+    async fn get_document_chunks(&self, document_id: Uuid) -> Result<Vec<DocumentChunk>, DomainError>;
+
+    /// Delete a document and its chunks (new schema)
+    async fn delete_document_by_id(&self, id: Uuid) -> Result<bool, DomainError>;
+
+    /// Disable a document (soft delete - excludes from search) (new schema)
+    async fn disable_document(&self, id: Uuid) -> Result<bool, DomainError>;
+
+    /// Enable a previously disabled document (new schema)
+    async fn enable_document(&self, id: Uuid) -> Result<bool, DomainError>;
+}
+
+/// Information about a document source
+#[derive(Debug, Clone)]
+pub struct SourceInfo {
+    /// Source identifier
+    pub source: String,
+    /// Number of documents/chunks from this source
+    pub document_count: usize,
 }
 
 #[cfg(test)]
@@ -362,6 +415,95 @@ pub mod mock {
         async fn document_count(&self) -> Result<usize, DomainError> {
             self.check_should_fail().await?;
             Ok(self.documents.read().await.len())
+        }
+
+        async fn list_by_source(&self, source: &str) -> Result<Vec<SearchResult>, DomainError> {
+            self.check_should_fail().await?;
+
+            let docs = self.documents.read().await;
+            Ok(docs
+                .iter()
+                .filter(|doc| doc.source.as_deref() == Some(source))
+                .cloned()
+                .collect())
+        }
+
+        async fn delete_by_source(&self, source: &str) -> Result<DeleteDocumentsResult, DomainError> {
+            self.check_should_fail().await?;
+
+            let mut docs = self.documents.write().await;
+            let initial_len = docs.len();
+
+            docs.retain(|doc| doc.source.as_deref() != Some(source));
+
+            let deleted = initial_len - docs.len();
+            Ok(DeleteDocumentsResult::new(deleted, 0))
+        }
+
+        async fn list_sources(&self) -> Result<Vec<SourceInfo>, DomainError> {
+            self.check_should_fail().await?;
+
+            let docs = self.documents.read().await;
+            let mut sources: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
+
+            for doc in docs.iter() {
+                if let Some(source) = &doc.source {
+                    *sources.entry(source.clone()).or_insert(0) += 1;
+                }
+            }
+
+            Ok(sources
+                .into_iter()
+                .map(|(source, document_count)| SourceInfo {
+                    source,
+                    document_count,
+                })
+                .collect())
+        }
+
+        async fn ensure_schema(&self) -> Result<(), DomainError> {
+            self.check_should_fail().await?;
+            // Mock provider doesn't need schema setup
+            Ok(())
+        }
+
+        async fn create_document(
+            &self,
+            _request: CreateDocumentRequest,
+        ) -> Result<KnowledgeBaseDocument, DomainError> {
+            self.check_should_fail().await?;
+            Ok(KnowledgeBaseDocument::new(self.id.as_str()))
+        }
+
+        async fn get_document_by_id(&self, _id: Uuid) -> Result<Option<KnowledgeBaseDocument>, DomainError> {
+            self.check_should_fail().await?;
+            Ok(None)
+        }
+
+        async fn list_documents(&self) -> Result<Vec<DocumentSummary>, DomainError> {
+            self.check_should_fail().await?;
+            Ok(Vec::new())
+        }
+
+        async fn get_document_chunks(&self, _document_id: Uuid) -> Result<Vec<DocumentChunk>, DomainError> {
+            self.check_should_fail().await?;
+            Ok(Vec::new())
+        }
+
+        async fn delete_document_by_id(&self, _id: Uuid) -> Result<bool, DomainError> {
+            self.check_should_fail().await?;
+            Ok(true)
+        }
+
+        async fn disable_document(&self, _id: Uuid) -> Result<bool, DomainError> {
+            self.check_should_fail().await?;
+            Ok(true)
+        }
+
+        async fn enable_document(&self, _id: Uuid) -> Result<bool, DomainError> {
+            self.check_should_fail().await?;
+            Ok(true)
         }
     }
 

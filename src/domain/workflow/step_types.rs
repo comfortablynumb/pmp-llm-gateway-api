@@ -17,6 +17,9 @@ pub enum WorkflowStepType {
 
     /// Conditional branching step
     Conditional(ConditionalStep),
+
+    /// HTTP request step
+    HttpRequest(HttpRequestStep),
 }
 
 impl WorkflowStepType {
@@ -27,6 +30,7 @@ impl WorkflowStepType {
             Self::KnowledgeBaseSearch(_) => "knowledge_base_search",
             Self::CragScoring(_) => "crag_scoring",
             Self::Conditional(_) => "conditional",
+            Self::HttpRequest(_) => "http_request",
         }
     }
 }
@@ -37,13 +41,8 @@ pub struct ChatCompletionStep {
     /// Model ID to use for completion
     pub model_id: String,
 
-    /// Optional prompt ID to use as template
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub prompt_id: Option<String>,
-
-    /// Optional system message (can contain variable references)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub system_message: Option<String>,
+    /// Prompt ID to use as system message template
+    pub prompt_id: String,
 
     /// User message (can contain variable references)
     pub user_message: String,
@@ -62,26 +61,19 @@ pub struct ChatCompletionStep {
 }
 
 impl ChatCompletionStep {
-    pub fn new(model_id: impl Into<String>, user_message: impl Into<String>) -> Self {
+    pub fn new(
+        model_id: impl Into<String>,
+        prompt_id: impl Into<String>,
+        user_message: impl Into<String>,
+    ) -> Self {
         Self {
             model_id: model_id.into(),
-            prompt_id: None,
-            system_message: None,
+            prompt_id: prompt_id.into(),
             user_message: user_message.into(),
             temperature: None,
             max_tokens: None,
             top_p: None,
         }
-    }
-
-    pub fn with_prompt_id(mut self, prompt_id: impl Into<String>) -> Self {
-        self.prompt_id = Some(prompt_id.into());
-        self
-    }
-
-    pub fn with_system_message(mut self, message: impl Into<String>) -> Self {
-        self.system_message = Some(message.into());
-        self
     }
 
     pub fn with_temperature(mut self, temperature: f32) -> Self {
@@ -162,6 +154,12 @@ pub struct CragScoringStep {
     /// Query for relevance scoring (can contain variable references)
     pub query: String,
 
+    /// Model ID to use for LLM-based scoring
+    pub model_id: String,
+
+    /// Prompt ID for LLM-based scoring instructions
+    pub prompt_id: String,
+
     /// Relevance threshold (0.0 - 1.0)
     #[serde(default = "default_threshold")]
     pub threshold: f32,
@@ -169,10 +167,6 @@ pub struct CragScoringStep {
     /// Scoring strategy: "threshold", "llm", or "hybrid"
     #[serde(default = "default_strategy")]
     pub strategy: ScoringStrategy,
-
-    /// Optional prompt ID for LLM-based scoring
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub prompt_id: Option<String>,
 }
 
 fn default_threshold() -> f32 {
@@ -180,7 +174,7 @@ fn default_threshold() -> f32 {
 }
 
 fn default_strategy() -> ScoringStrategy {
-    ScoringStrategy::Threshold
+    ScoringStrategy::Hybrid
 }
 
 /// CRAG scoring strategy
@@ -188,24 +182,30 @@ fn default_strategy() -> ScoringStrategy {
 #[serde(rename_all = "snake_case")]
 pub enum ScoringStrategy {
     /// Score based on similarity threshold only
-    #[default]
     Threshold,
 
     /// Score using LLM evaluation
     Llm,
 
     /// Combine threshold and LLM scoring
+    #[default]
     Hybrid,
 }
 
 impl CragScoringStep {
-    pub fn new(input_documents: impl Into<String>, query: impl Into<String>) -> Self {
+    pub fn new(
+        input_documents: impl Into<String>,
+        query: impl Into<String>,
+        model_id: impl Into<String>,
+        prompt_id: impl Into<String>,
+    ) -> Self {
         Self {
             input_documents: input_documents.into(),
             query: query.into(),
+            model_id: model_id.into(),
+            prompt_id: prompt_id.into(),
             threshold: default_threshold(),
             strategy: default_strategy(),
-            prompt_id: None,
         }
     }
 
@@ -216,11 +216,6 @@ impl CragScoringStep {
 
     pub fn with_strategy(mut self, strategy: ScoringStrategy) -> Self {
         self.strategy = strategy;
-        self
-    }
-
-    pub fn with_prompt_id(mut self, prompt_id: impl Into<String>) -> Self {
-        self.prompt_id = Some(prompt_id.into());
         self
     }
 }
@@ -426,6 +421,150 @@ impl ConditionalAction {
     }
 }
 
+/// HTTP request method
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum HttpMethod {
+    #[default]
+    GET,
+    POST,
+    PUT,
+    DELETE,
+    PATCH,
+    HEAD,
+    OPTIONS,
+}
+
+/// HTTP request step configuration
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HttpRequestStep {
+    /// External API ID to use (required) - provides base URL and base headers
+    pub external_api_id: String,
+
+    /// Credential ID for authentication (optional, must be of type HttpApiKey)
+    /// Provides auth header (header_name + header_value with ${api-key} interpolation)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_id: Option<String>,
+
+    /// URI path to append to the external API's base URL (can contain variable references)
+    /// Example: "/users/${input:user_id}" will be appended to the external API's base_url
+    #[serde(default)]
+    pub path: String,
+
+    /// HTTP method
+    #[serde(default)]
+    pub method: HttpMethod,
+
+    /// Additional request headers (key -> value, values can contain variable references)
+    /// These are merged with the external API's base_headers
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub headers: std::collections::HashMap<String, String>,
+
+    /// Request body (can contain variable references or be a JSON template)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<serde_json::Value>,
+
+    /// Timeout in milliseconds (default: 30000)
+    #[serde(default = "default_http_timeout")]
+    pub timeout_ms: u64,
+
+    /// Expected response content type (default: "application/json")
+    #[serde(default = "default_content_type")]
+    pub expected_content_type: String,
+
+    /// Whether to fail on non-2xx status codes (default: true)
+    #[serde(default = "default_true")]
+    pub fail_on_error: bool,
+
+    /// JSON path to extract from response (optional, e.g., "$.data.result")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extract_path: Option<String>,
+}
+
+fn default_http_timeout() -> u64 {
+    30000
+}
+
+fn default_content_type() -> String {
+    "application/json".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl HttpRequestStep {
+    /// Create a new HTTP request step with an external API ID
+    pub fn new(external_api_id: impl Into<String>) -> Self {
+        Self {
+            external_api_id: external_api_id.into(),
+            credential_id: None,
+            path: String::new(),
+            method: HttpMethod::GET,
+            headers: std::collections::HashMap::new(),
+            body: None,
+            timeout_ms: default_http_timeout(),
+            expected_content_type: default_content_type(),
+            fail_on_error: true,
+            extract_path: None,
+        }
+    }
+
+    /// Set the credential ID for authentication
+    pub fn with_credential(mut self, credential_id: impl Into<String>) -> Self {
+        self.credential_id = Some(credential_id.into());
+        self
+    }
+
+    /// Set the URI path
+    pub fn with_path(mut self, path: impl Into<String>) -> Self {
+        self.path = path.into();
+        self
+    }
+
+    /// Set the HTTP method
+    pub fn with_method(mut self, method: HttpMethod) -> Self {
+        self.method = method;
+        self
+    }
+
+    /// Add a header
+    pub fn with_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.headers.insert(key.into(), value.into());
+        self
+    }
+
+    /// Set the request body
+    pub fn with_body(mut self, body: serde_json::Value) -> Self {
+        self.body = Some(body);
+        self
+    }
+
+    /// Set the timeout in milliseconds
+    pub fn with_timeout_ms(mut self, timeout_ms: u64) -> Self {
+        self.timeout_ms = timeout_ms;
+        self
+    }
+
+    /// Set the expected content type
+    pub fn with_expected_content_type(mut self, content_type: impl Into<String>) -> Self {
+        self.expected_content_type = content_type.into();
+        self
+    }
+
+    /// Set whether to fail on non-2xx status codes
+    pub fn with_fail_on_error(mut self, fail_on_error: bool) -> Self {
+        self.fail_on_error = fail_on_error;
+        self
+    }
+
+    /// Set the JSON path to extract from response
+    pub fn with_extract_path(mut self, path: impl Into<String>) -> Self {
+        self.extract_path = Some(path.into());
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -433,14 +572,13 @@ mod tests {
 
     #[test]
     fn test_chat_completion_step_builder() {
-        let step = ChatCompletionStep::new("gpt-4", "Hello ${request:question}")
-            .with_system_message("You are a helpful assistant")
+        let step = ChatCompletionStep::new("gpt-4", "helpful-assistant", "Hello ${request:question}")
             .with_temperature(0.7)
             .with_max_tokens(1000);
 
         assert_eq!(step.model_id, "gpt-4");
+        assert_eq!(step.prompt_id, "helpful-assistant");
         assert_eq!(step.user_message, "Hello ${request:question}");
-        assert_eq!(step.system_message, Some("You are a helpful assistant".to_string()));
         assert_eq!(step.temperature, Some(0.7));
         assert_eq!(step.max_tokens, Some(1000));
     }
@@ -459,13 +597,21 @@ mod tests {
 
     #[test]
     fn test_crag_scoring_step_builder() {
-        let step = CragScoringStep::new("${step:search:documents}", "${request:query}")
-            .with_threshold(0.6)
-            .with_strategy(ScoringStrategy::Hybrid);
+        let step = CragScoringStep::new(
+            "${step:search:documents}",
+            "${request:query}",
+            "gpt-4o",
+            "crag-scorer",
+        )
+        .with_threshold(0.6)
+        .with_strategy(ScoringStrategy::Llm);
 
         assert_eq!(step.input_documents, "${step:search:documents}");
+        assert_eq!(step.query, "${request:query}");
+        assert_eq!(step.model_id, "gpt-4o");
+        assert_eq!(step.prompt_id, "crag-scorer");
         assert_eq!(step.threshold, 0.6);
-        assert_eq!(step.strategy, ScoringStrategy::Hybrid);
+        assert_eq!(step.strategy, ScoringStrategy::Llm);
     }
 
     #[test]
@@ -533,12 +679,13 @@ mod tests {
     #[test]
     fn test_workflow_step_type_serialization() {
         let step = WorkflowStepType::ChatCompletion(
-            ChatCompletionStep::new("gpt-4", "Hello")
+            ChatCompletionStep::new("gpt-4", "helpful-assistant", "Hello")
         );
 
         let json = serde_json::to_string(&step).unwrap();
         assert!(json.contains("\"type\":\"chat_completion\""));
         assert!(json.contains("\"model_id\":\"gpt-4\""));
+        assert!(json.contains("\"prompt_id\":\"helpful-assistant\""));
 
         let deserialized: WorkflowStepType = serde_json::from_str(&json).unwrap();
         assert_eq!(step, deserialized);

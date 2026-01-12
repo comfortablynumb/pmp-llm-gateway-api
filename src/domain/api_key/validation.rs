@@ -77,6 +77,7 @@ pub fn validate_api_key_id(id: &str) -> Result<(), ApiKeyValidationError> {
 /// Validate an API key secret format
 ///
 /// The secret should be a base64-encoded string of sufficient length
+#[allow(dead_code)]
 pub fn validate_api_key_secret(secret: &str) -> Result<(), ApiKeyValidationError> {
     if secret.is_empty() {
         return Err(ApiKeyValidationError::EmptyId);

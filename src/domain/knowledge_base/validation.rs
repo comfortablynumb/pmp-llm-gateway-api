@@ -95,6 +95,7 @@ pub fn validate_knowledge_base_id(id: &str) -> Result<(), KnowledgeBaseValidatio
 }
 
 /// Validate embedding dimensions
+#[allow(dead_code)]
 pub fn validate_dimensions(dims: u32) -> Result<(), KnowledgeBaseValidationError> {
     const MIN: u32 = 1;
     const MAX: u32 = 8192; // Most models have <= 4096 dims
@@ -111,6 +112,7 @@ pub fn validate_dimensions(dims: u32) -> Result<(), KnowledgeBaseValidationError
 }
 
 /// Validate top_k value
+#[allow(dead_code)]
 pub fn validate_top_k(top_k: u32) -> Result<(), KnowledgeBaseValidationError> {
     const MIN: u32 = 1;
     const MAX: u32 = 1000;
@@ -127,6 +129,7 @@ pub fn validate_top_k(top_k: u32) -> Result<(), KnowledgeBaseValidationError> {
 }
 
 /// Validate similarity threshold
+#[allow(dead_code)]
 pub fn validate_similarity_threshold(threshold: f32) -> Result<(), KnowledgeBaseValidationError> {
     if !(0.0..=1.0).contains(&threshold) {
         return Err(KnowledgeBaseValidationError::InvalidSimilarityThreshold {

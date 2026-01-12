@@ -8,10 +8,12 @@ use aws_sdk_bedrockagentruntime::Client as BedrockAgentClient;
 use aws_smithy_types::Document as SmithyDocument;
 
 use crate::domain::knowledge_base::{
-    AddDocumentsResult, DeleteDocumentsResult, Document, KnowledgeBaseId, KnowledgeBaseProvider,
-    MetadataFilter, SearchParams, SearchResult,
+    AddDocumentsResult, CreateDocumentRequest, DeleteDocumentsResult, Document, DocumentChunk,
+    DocumentSummary, KnowledgeBaseDocument, KnowledgeBaseId, KnowledgeBaseProvider, MetadataFilter,
+    SearchParams, SearchResult, SourceInfo,
 };
 use crate::domain::DomainError;
+use uuid::Uuid;
 
 /// Configuration for AWS Bedrock Knowledge Base
 #[derive(Debug, Clone)]
@@ -366,6 +368,69 @@ impl KnowledgeBaseProvider for AwsKnowledgeBase {
              Use AWS console or management API instead."
                 .to_string(),
         ))
+    }
+
+    async fn list_by_source(&self, _source: &str) -> Result<Vec<SearchResult>, DomainError> {
+        Err(DomainError::knowledge_base(
+            "AWS Knowledge Base does not support listing documents by source. \
+             Use AWS console or S3 browser instead."
+                .to_string(),
+        ))
+    }
+
+    async fn delete_by_source(&self, _source: &str) -> Result<DeleteDocumentsResult, DomainError> {
+        Err(DomainError::knowledge_base(
+            "AWS Knowledge Base does not support deleting documents by source. \
+             Use S3 data source management instead."
+                .to_string(),
+        ))
+    }
+
+    async fn list_sources(&self) -> Result<Vec<SourceInfo>, DomainError> {
+        Err(DomainError::knowledge_base(
+            "AWS Knowledge Base does not support listing sources. \
+             Use AWS console or S3 browser instead."
+                .to_string(),
+        ))
+    }
+
+    async fn ensure_schema(&self) -> Result<(), DomainError> {
+        // AWS Knowledge Bases are managed through the Bedrock console
+        Ok(())
+    }
+
+    // New document-based methods - not supported in AWS provider
+    async fn create_document(
+        &self,
+        _request: CreateDocumentRequest,
+    ) -> Result<KnowledgeBaseDocument, DomainError> {
+        Err(DomainError::knowledge_base(
+            "Document creation not supported in AWS Knowledge Base. Use S3 data source.".to_string(),
+        ))
+    }
+
+    async fn get_document_by_id(&self, _id: Uuid) -> Result<Option<KnowledgeBaseDocument>, DomainError> {
+        Ok(None)
+    }
+
+    async fn list_documents(&self) -> Result<Vec<DocumentSummary>, DomainError> {
+        Ok(Vec::new())
+    }
+
+    async fn get_document_chunks(&self, _document_id: Uuid) -> Result<Vec<DocumentChunk>, DomainError> {
+        Ok(Vec::new())
+    }
+
+    async fn delete_document_by_id(&self, _id: Uuid) -> Result<bool, DomainError> {
+        Ok(false)
+    }
+
+    async fn disable_document(&self, _id: Uuid) -> Result<bool, DomainError> {
+        Ok(false)
+    }
+
+    async fn enable_document(&self, _id: Uuid) -> Result<bool, DomainError> {
+        Ok(false)
     }
 }
 

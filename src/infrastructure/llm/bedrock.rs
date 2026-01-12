@@ -316,6 +316,7 @@ struct ClaudeUsage {
 struct BedrockTitanResponse {
     results: Vec<TitanResult>,
     #[serde(rename = "inputTextTokenCount")]
+    #[allow(dead_code)]
     input_text_token_count: Option<u32>,
     usage: Option<TitanUsage>,
 }

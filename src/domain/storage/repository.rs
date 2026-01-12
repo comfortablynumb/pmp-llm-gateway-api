@@ -6,7 +6,7 @@ use async_trait::async_trait;
 
 use crate::domain::DomainError;
 
-use super::entity::{StorageEntity, StorageKey};
+use super::entity::StorageEntity;
 
 /// Generic storage trait for CRUD operations on any entity type
 #[async_trait]
@@ -55,6 +55,7 @@ where
 #[cfg(test)]
 pub mod mock {
     use super::*;
+    use crate::domain::StorageKey;
     use std::collections::HashMap;
     use std::sync::Mutex;
 
@@ -181,6 +182,7 @@ pub mod mock {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use crate::domain::StorageKey;
         use serde::{Deserialize, Serialize};
 
         #[derive(Debug, Clone, PartialEq, Eq, Hash)]

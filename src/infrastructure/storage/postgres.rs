@@ -126,6 +126,14 @@ where
     }
 
     /// Ensures the storage table exists
+    ///
+    /// **DEPRECATED**: This method should not be used in production.
+    /// Tables must be created via dbmate migrations in db/migrations/.
+    /// This method is retained only for testing purposes.
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use dbmate migrations instead. Tables should be created via db/migrations/"
+    )]
     pub async fn ensure_table(&self) -> Result<(), DomainError> {
         let query = format!(
             r#"
