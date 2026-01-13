@@ -27,7 +27,7 @@ pub use entity::{
     validate_workflow_id, OnErrorAction, Workflow, WorkflowId, WorkflowStep, MAX_ID_LENGTH,
 };
 pub use error::WorkflowError;
-pub use executor::{StepExecutionResult, WorkflowExecutor, WorkflowResult};
+pub use executor::{StepExecutionResult, WorkflowExecutor, WorkflowResult, WorkflowTokenUsage};
 pub use repository::WorkflowRepository;
 pub use step_types::{
     ChatCompletionStep, Condition, ConditionalAction, ConditionalStep, ConditionOperator,

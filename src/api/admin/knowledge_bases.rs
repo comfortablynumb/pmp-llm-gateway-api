@@ -2,18 +2,14 @@
 
 use std::collections::HashMap;
 
-use axum::{
-    extract::{Multipart, Path, State},
-    Json,
-};
+use axum::extract::{Multipart, Path, State};
 use serde::{Deserialize, Serialize};
 use tracing::debug;
-
 use uuid::Uuid;
 
 use crate::api::middleware::RequireAdmin;
 use crate::api::state::AppState;
-use crate::api::types::ApiError;
+use crate::api::types::{ApiError, Json};
 use crate::domain::ingestion::{ChunkingType, ParserType};
 use crate::domain::knowledge_base::{KnowledgeBaseConfig, KnowledgeBaseType};
 use crate::infrastructure::services::{

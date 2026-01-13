@@ -4,6 +4,7 @@
 
 pub mod chat;
 pub mod error;
+pub mod json;
 pub mod models;
 pub mod operation;
 
@@ -14,6 +15,7 @@ pub use chat::{
     StopSequence, ToolCall, Usage,
 };
 pub use error::{ApiError, ApiErrorResponse};
+pub use json::Json;
 pub use models::{Model as ApiModel, ModelsResponse};
 pub use operation::{
     AsyncOperationCreated, AsyncQueryParams, OperationResponse, OperationsListResponse,

@@ -3,16 +3,13 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use axum::{
-    extract::{Path, State},
-    Json,
-};
+use axum::extract::{Path, State};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 use crate::api::middleware::{AdminAuth, RequireAdmin};
 use crate::api::state::AppState;
-use crate::api::types::ApiError;
+use crate::api::types::{ApiError, Json};
 use crate::domain::credentials::CredentialType;
 use crate::domain::llm::{LlmJsonSchema, LlmProvider, LlmRequest, LlmResponseFormat, Message};
 use crate::domain::model::{Model, ModelConfig};

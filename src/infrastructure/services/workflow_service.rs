@@ -446,7 +446,12 @@ mod tests {
         ) -> Result<WorkflowResult, WorkflowError> {
             Ok(WorkflowResult::success(
                 serde_json::json!({"mock": true}),
-                vec![StepExecutionResult::success("mock-step", serde_json::json!({}), 0)],
+                vec![StepExecutionResult::success(
+                    "mock-step",
+                    "chat_completion",
+                    serde_json::json!({}),
+                    0,
+                )],
                 0,
             ))
         }

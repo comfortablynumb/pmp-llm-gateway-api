@@ -6,36 +6,7 @@ use std::collections::HashMap;
 
 use crate::domain::storage::{StorageEntity, StorageKey};
 
-/// Storage key for the singleton AppConfiguration
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct AppConfigurationId(String);
-
-impl AppConfigurationId {
-    /// The singleton configuration ID
-    pub const SINGLETON: &'static str = "app_config";
-
-    pub fn singleton() -> Self {
-        Self(Self::SINGLETON.to_string())
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl Default for AppConfigurationId {
-    fn default() -> Self {
-        Self::singleton()
-    }
-}
-
-impl StorageKey for AppConfigurationId {
-    fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-/// Configuration key identifier (for individual settings)
+/// Configuration key identifier
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConfigKey(String);
 
@@ -54,6 +25,12 @@ impl ConfigKey {
 impl std::fmt::Display for ConfigKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+impl StorageKey for ConfigKey {
+    fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
@@ -150,6 +127,18 @@ impl ConfigCategory {
             ConfigCategory::RateLimit => "rate_limit",
         }
     }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "general" => Some(ConfigCategory::General),
+            "persistence" => Some(ConfigCategory::Persistence),
+            "logging" => Some(ConfigCategory::Logging),
+            "security" => Some(ConfigCategory::Security),
+            "cache" => Some(ConfigCategory::Cache),
+            "rate_limit" => Some(ConfigCategory::RateLimit),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for ConfigCategory {
@@ -158,29 +147,64 @@ impl std::fmt::Display for ConfigCategory {
     }
 }
 
-/// A single configuration entry
+/// Metadata for a configuration entry (stored in metadata JSONB column)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigMetadata {
+    pub category: String,
+    pub description: String,
+    pub value_type: String,
+}
+
+impl ConfigMetadata {
+    pub fn new(category: ConfigCategory, description: impl Into<String>) -> Self {
+        Self {
+            category: category.as_str().to_string(),
+            description: description.into(),
+            value_type: String::new(), // Will be set from value
+        }
+    }
+
+    pub fn with_value_type(mut self, value_type: &str) -> Self {
+        self.value_type = value_type.to_string();
+        self
+    }
+
+    pub fn category(&self) -> Option<ConfigCategory> {
+        ConfigCategory::from_str(&self.category)
+    }
+}
+
+impl Default for ConfigMetadata {
+    fn default() -> Self {
+        Self {
+            category: "general".to_string(),
+            description: String::new(),
+            value_type: String::new(),
+        }
+    }
+}
+
+/// A single configuration entry (maps to one row in app_configurations table)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigEntry {
     key: ConfigKey,
     value: ConfigValue,
-    category: ConfigCategory,
-    description: Option<String>,
+    metadata: ConfigMetadata,
+    #[serde(default = "Utc::now")]
+    created_at: DateTime<Utc>,
+    #[serde(default = "Utc::now")]
     updated_at: DateTime<Utc>,
 }
 
 impl ConfigEntry {
-    pub fn new(
-        key: ConfigKey,
-        value: ConfigValue,
-        category: ConfigCategory,
-        description: Option<String>,
-    ) -> Self {
+    pub fn new(key: ConfigKey, value: ConfigValue, metadata: ConfigMetadata) -> Self {
+        let now = Utc::now();
         Self {
             key,
             value,
-            category,
-            description,
-            updated_at: Utc::now(),
+            metadata,
+            created_at: now,
+            updated_at: now,
         }
     }
 
@@ -192,12 +216,20 @@ impl ConfigEntry {
         &self.value
     }
 
-    pub fn category(&self) -> ConfigCategory {
-        self.category
+    pub fn metadata(&self) -> &ConfigMetadata {
+        &self.metadata
     }
 
-    pub fn description(&self) -> Option<&str> {
-        self.description.as_deref()
+    pub fn category(&self) -> ConfigCategory {
+        self.metadata.category().unwrap_or(ConfigCategory::General)
+    }
+
+    pub fn description(&self) -> &str {
+        &self.metadata.description
+    }
+
+    pub fn created_at(&self) -> DateTime<Utc> {
+        self.created_at
     }
 
     pub fn updated_at(&self) -> DateTime<Utc> {
@@ -208,153 +240,45 @@ impl ConfigEntry {
         self.value = value;
         self.updated_at = Utc::now();
     }
-}
 
-/// Application configuration collection
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AppConfiguration {
-    id: AppConfigurationId,
-    entries: HashMap<String, ConfigEntry>,
-}
-
-impl Default for AppConfiguration {
-    fn default() -> Self {
-        Self {
-            id: AppConfigurationId::singleton(),
-            entries: HashMap::new(),
-        }
+    pub fn with_timestamps(mut self, created_at: DateTime<Utc>, updated_at: DateTime<Utc>) -> Self {
+        self.created_at = created_at;
+        self.updated_at = updated_at;
+        self
     }
 }
 
-impl StorageEntity for AppConfiguration {
-    type Key = AppConfigurationId;
+impl StorageEntity for ConfigEntry {
+    type Key = ConfigKey;
 
     fn key(&self) -> &Self::Key {
-        &self.id
+        &self.key
     }
+}
+
+/// Application configuration collection (constructed from individual entries)
+#[derive(Debug, Clone, Default)]
+pub struct AppConfiguration {
+    entries: HashMap<String, ConfigEntry>,
 }
 
 impl AppConfiguration {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            entries: HashMap::new(),
+        }
     }
 
-    /// Create configuration with default values
-    pub fn with_defaults() -> Self {
+    /// Create configuration from a list of entries
+    pub fn from_entries(entries: Vec<ConfigEntry>) -> Self {
         let mut config = Self::new();
 
-        // Persistence settings
-        config.set_default(
-            "persistence.enabled",
-            ConfigValue::Boolean(false),
-            ConfigCategory::Persistence,
-            Some("Enable execution logging"),
-        );
-        config.set_default(
-            "persistence.enabled_models",
-            ConfigValue::StringList(vec![]),
-            ConfigCategory::Persistence,
-            Some("List of model IDs to log executions for (empty = all if enabled)"),
-        );
-        config.set_default(
-            "persistence.enabled_workflows",
-            ConfigValue::StringList(vec![]),
-            ConfigCategory::Persistence,
-            Some("List of workflow IDs to log executions for (empty = all if enabled)"),
-        );
-        config.set_default(
-            "persistence.log_retention_days",
-            ConfigValue::Integer(30),
-            ConfigCategory::Persistence,
-            Some("Number of days to retain execution logs"),
-        );
-        config.set_default(
-            "persistence.log_sensitive_data",
-            ConfigValue::Boolean(false),
-            ConfigCategory::Persistence,
-            Some("Whether to log full input/output (may contain sensitive data)"),
-        );
-
-        // Logging settings
-        config.set_default(
-            "logging.level",
-            ConfigValue::String("info".to_string()),
-            ConfigCategory::Logging,
-            Some("Log level (trace, debug, info, warn, error)"),
-        );
-        config.set_default(
-            "logging.format",
-            ConfigValue::String("json".to_string()),
-            ConfigCategory::Logging,
-            Some("Log format (json, pretty)"),
-        );
-
-        // Cache settings
-        config.set_default(
-            "cache.enabled",
-            ConfigValue::Boolean(true),
-            ConfigCategory::Cache,
-            Some("Enable response caching"),
-        );
-        config.set_default(
-            "cache.ttl_seconds",
-            ConfigValue::Integer(3600),
-            ConfigCategory::Cache,
-            Some("Cache TTL in seconds"),
-        );
-        config.set_default(
-            "cache.max_entries",
-            ConfigValue::Integer(10000),
-            ConfigCategory::Cache,
-            Some("Maximum cache entries"),
-        );
-
-        // Security settings
-        config.set_default(
-            "security.require_api_key",
-            ConfigValue::Boolean(true),
-            ConfigCategory::Security,
-            Some("Require API key for all requests"),
-        );
-        config.set_default(
-            "security.allowed_origins",
-            ConfigValue::StringList(vec!["*".to_string()]),
-            ConfigCategory::Security,
-            Some("Allowed CORS origins"),
-        );
-
-        // Rate limit settings
-        config.set_default(
-            "rate_limit.enabled",
-            ConfigValue::Boolean(true),
-            ConfigCategory::RateLimit,
-            Some("Enable rate limiting"),
-        );
-        config.set_default(
-            "rate_limit.default_rpm",
-            ConfigValue::Integer(60),
-            ConfigCategory::RateLimit,
-            Some("Default requests per minute"),
-        );
-
+        for entry in entries {
+            config
+                .entries
+                .insert(entry.key().as_str().to_string(), entry);
+        }
         config
-    }
-
-    fn set_default(
-        &mut self,
-        key: &str,
-        value: ConfigValue,
-        category: ConfigCategory,
-        description: Option<&str>,
-    ) {
-        let config_key = ConfigKey::new(key).expect("Invalid default config key");
-        let entry = ConfigEntry::new(
-            config_key,
-            value,
-            category,
-            description.map(|s| s.to_string()),
-        );
-        self.entries.insert(key.to_string(), entry);
     }
 
     pub fn get(&self, key: &str) -> Option<&ConfigEntry> {
@@ -365,7 +289,11 @@ impl AppConfiguration {
         self.entries.get(key).map(|e| e.value())
     }
 
-    pub fn set(&mut self, key: ConfigKey, value: ConfigValue) -> Result<(), ConfigValidationError> {
+    pub fn set(
+        &mut self,
+        key: ConfigKey,
+        value: ConfigValue,
+    ) -> Result<(), ConfigValidationError> {
         if let Some(entry) = self.entries.get_mut(key.as_str()) {
             // Validate type matches
             if entry.value().type_name() != value.type_name() {
@@ -407,6 +335,10 @@ impl AppConfiguration {
             ConfigCategory::Cache,
             ConfigCategory::RateLimit,
         ]
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 
     // Convenience getters for persistence settings
@@ -545,23 +477,75 @@ mod tests {
         assert_eq!(bool_val.as_boolean(), Some(true));
 
         let list_val = ConfigValue::StringList(vec!["a".to_string(), "b".to_string()]);
-        assert_eq!(list_val.as_string_list(), Some(&["a".to_string(), "b".to_string()][..]));
+        assert_eq!(
+            list_val.as_string_list(),
+            Some(&["a".to_string(), "b".to_string()][..])
+        );
     }
 
     #[test]
-    fn test_app_configuration_defaults() {
-        let config = AppConfiguration::with_defaults();
+    fn test_config_metadata() {
+        let metadata = ConfigMetadata::new(ConfigCategory::Persistence, "Test description")
+            .with_value_type("boolean");
 
-        assert!(!config.is_persistence_enabled());
+        assert_eq!(metadata.category(), Some(ConfigCategory::Persistence));
+        assert_eq!(metadata.description, "Test description");
+        assert_eq!(metadata.value_type, "boolean");
+    }
+
+    #[test]
+    fn test_config_entry_creation() {
+        let key = ConfigKey::new("test.key").unwrap();
+        let value = ConfigValue::Boolean(true);
+        let metadata = ConfigMetadata::new(ConfigCategory::General, "Test");
+
+        let entry = ConfigEntry::new(key.clone(), value, metadata);
+
+        assert_eq!(entry.key().as_str(), "test.key");
+        assert_eq!(entry.value().as_boolean(), Some(true));
+        assert_eq!(entry.category(), ConfigCategory::General);
+    }
+
+    #[test]
+    fn test_app_configuration_from_entries() {
+        let entries = vec![
+            ConfigEntry::new(
+                ConfigKey::new("persistence.enabled").unwrap(),
+                ConfigValue::Boolean(true),
+                ConfigMetadata::new(ConfigCategory::Persistence, "Enable logging"),
+            ),
+            ConfigEntry::new(
+                ConfigKey::new("persistence.log_retention_days").unwrap(),
+                ConfigValue::Integer(30),
+                ConfigMetadata::new(ConfigCategory::Persistence, "Retention days"),
+            ),
+        ];
+
+        let config = AppConfiguration::from_entries(entries);
+
+        assert!(config.is_persistence_enabled());
         assert_eq!(config.log_retention_days(), 30);
+    }
+
+    #[test]
+    fn test_app_configuration_empty_defaults() {
+        let config = AppConfiguration::new();
+
+        // Empty config returns defaults for convenience getters
+        assert!(!config.is_persistence_enabled());
+        assert_eq!(config.log_retention_days(), 30); // Default fallback
         assert!(!config.log_sensitive_data());
-        assert!(config.enabled_models().is_empty());
-        assert!(config.enabled_workflows().is_empty());
     }
 
     #[test]
     fn test_app_configuration_set() {
-        let mut config = AppConfiguration::with_defaults();
+        let entries = vec![ConfigEntry::new(
+            ConfigKey::new("persistence.enabled").unwrap(),
+            ConfigValue::Boolean(false),
+            ConfigMetadata::new(ConfigCategory::Persistence, "Enable logging"),
+        )];
+
+        let mut config = AppConfiguration::from_entries(entries);
 
         let key = ConfigKey::new("persistence.enabled").unwrap();
         assert!(config.set(key, ConfigValue::Boolean(true)).is_ok());
@@ -570,33 +554,60 @@ mod tests {
 
     #[test]
     fn test_app_configuration_type_mismatch() {
-        let mut config = AppConfiguration::with_defaults();
+        let entries = vec![ConfigEntry::new(
+            ConfigKey::new("persistence.enabled").unwrap(),
+            ConfigValue::Boolean(false),
+            ConfigMetadata::new(ConfigCategory::Persistence, "Enable logging"),
+        )];
+
+        let mut config = AppConfiguration::from_entries(entries);
 
         let key = ConfigKey::new("persistence.enabled").unwrap();
         let result = config.set(key, ConfigValue::String("true".to_string()));
-        assert!(matches!(result, Err(ConfigValidationError::TypeMismatch { .. })));
+        assert!(matches!(
+            result,
+            Err(ConfigValidationError::TypeMismatch { .. })
+        ));
     }
 
     #[test]
     fn test_should_log_model() {
-        let mut config = AppConfiguration::with_defaults();
+        let entries = vec![
+            ConfigEntry::new(
+                ConfigKey::new("persistence.enabled").unwrap(),
+                ConfigValue::Boolean(true),
+                ConfigMetadata::new(ConfigCategory::Persistence, "Enable logging"),
+            ),
+            ConfigEntry::new(
+                ConfigKey::new("persistence.enabled_models").unwrap(),
+                ConfigValue::StringList(vec![]),
+                ConfigMetadata::new(ConfigCategory::Persistence, "Enabled models"),
+            ),
+        ];
 
-        // Persistence disabled
-        assert!(!config.should_log_model("gpt-4"));
-
-        // Enable persistence
-        let key = ConfigKey::new("persistence.enabled").unwrap();
-        config.set(key, ConfigValue::Boolean(true)).unwrap();
+        let config = AppConfiguration::from_entries(entries);
 
         // Empty list = log all
         assert!(config.should_log_model("gpt-4"));
         assert!(config.should_log_model("claude-3"));
+    }
 
-        // Specific list
-        let key = ConfigKey::new("persistence.enabled_models").unwrap();
-        config
-            .set(key, ConfigValue::StringList(vec!["gpt-4".to_string()]))
-            .unwrap();
+    #[test]
+    fn test_should_log_model_specific_list() {
+        let entries = vec![
+            ConfigEntry::new(
+                ConfigKey::new("persistence.enabled").unwrap(),
+                ConfigValue::Boolean(true),
+                ConfigMetadata::new(ConfigCategory::Persistence, "Enable logging"),
+            ),
+            ConfigEntry::new(
+                ConfigKey::new("persistence.enabled_models").unwrap(),
+                ConfigValue::StringList(vec!["gpt-4".to_string()]),
+                ConfigMetadata::new(ConfigCategory::Persistence, "Enabled models"),
+            ),
+        ];
+
+        let config = AppConfiguration::from_entries(entries);
 
         assert!(config.should_log_model("gpt-4"));
         assert!(!config.should_log_model("claude-3"));
@@ -604,13 +615,26 @@ mod tests {
 
     #[test]
     fn test_list_by_category() {
-        let config = AppConfiguration::with_defaults();
+        let entries = vec![
+            ConfigEntry::new(
+                ConfigKey::new("persistence.enabled").unwrap(),
+                ConfigValue::Boolean(true),
+                ConfigMetadata::new(ConfigCategory::Persistence, "Enable logging"),
+            ),
+            ConfigEntry::new(
+                ConfigKey::new("cache.enabled").unwrap(),
+                ConfigValue::Boolean(true),
+                ConfigMetadata::new(ConfigCategory::Cache, "Enable caching"),
+            ),
+        ];
+
+        let config = AppConfiguration::from_entries(entries);
 
         let persistence_entries = config.list_by_category(ConfigCategory::Persistence);
-        assert!(!persistence_entries.is_empty());
-
-        for entry in persistence_entries {
-            assert_eq!(entry.category(), ConfigCategory::Persistence);
-        }
+        assert_eq!(persistence_entries.len(), 1);
+        assert_eq!(
+            persistence_entries[0].key().as_str(),
+            "persistence.enabled"
+        );
     }
 }

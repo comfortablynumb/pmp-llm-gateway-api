@@ -265,7 +265,6 @@ pub fn create_admin_router() -> Router<AppState> {
         )
         // Configuration management
         .route("/config", get(config::list_config))
-        .route("/config", delete(config::reset_config))
         .route("/config/category/{category}", get(config::list_config_by_category))
         .route("/config/{key}", get(config::get_config))
         .route("/config/{key}", put(config::update_config))

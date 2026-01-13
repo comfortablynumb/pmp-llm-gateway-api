@@ -1,15 +1,12 @@
 //! Test case management admin endpoints
 
-use axum::{
-    extract::{Path, Query, State},
-    Json,
-};
+use axum::extract::{Path, Query, State};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 use crate::api::middleware::RequireAdmin;
 use crate::api::state::AppState;
-use crate::api::types::ApiError;
+use crate::api::types::{ApiError, Json};
 use crate::domain::test_case::{
     AssertionCriteria, AssertionOperator, ModelPromptInput, TestCase, TestCaseInput, TestCaseQuery,
     TestCaseResultQuery, TestCaseType, WorkflowInput,

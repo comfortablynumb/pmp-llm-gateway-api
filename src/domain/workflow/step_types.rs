@@ -47,6 +47,11 @@ pub struct ChatCompletionStep {
     /// User message (can contain variable references)
     pub user_message: String,
 
+    /// Prompt template variables (key -> value, values can contain variable references)
+    /// These are passed to the prompt template for rendering
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub prompt_variables: std::collections::HashMap<String, String>,
+
     /// Optional temperature override
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
@@ -70,10 +75,28 @@ impl ChatCompletionStep {
             model_id: model_id.into(),
             prompt_id: prompt_id.into(),
             user_message: user_message.into(),
+            prompt_variables: std::collections::HashMap::new(),
             temperature: None,
             max_tokens: None,
             top_p: None,
         }
+    }
+
+    pub fn with_prompt_variable(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        self.prompt_variables.insert(key.into(), value.into());
+        self
+    }
+
+    pub fn with_prompt_variables(
+        mut self,
+        variables: std::collections::HashMap<String, String>,
+    ) -> Self {
+        self.prompt_variables = variables;
+        self
     }
 
     pub fn with_temperature(mut self, temperature: f32) -> Self {

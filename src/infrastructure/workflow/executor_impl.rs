@@ -7,15 +7,42 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use tracing::debug;
 
-use crate::domain::knowledge_base::SearchParams;
+use crate::domain::knowledge_base::{SearchParams, SearchResult};
 use crate::domain::llm::ProviderResolver;
 use crate::domain::storage::Storage;
 use crate::domain::{
     ConditionalAction, HttpMethod, HttpRequestStep, LlmRequest, OnErrorAction, Prompt,
     StepExecutionResult, Workflow, WorkflowContext, WorkflowError, WorkflowExecutor,
-    WorkflowResult, WorkflowStep, WorkflowStepType,
+    WorkflowResult, WorkflowStep, WorkflowStepType, WorkflowTokenUsage,
 };
 use crate::infrastructure::knowledge_base::KnowledgeBaseProviderRegistryTrait;
+
+/// Build XML representation of search results
+///
+/// Format: `<documents><document><id>...</id><content>...</content></document>...</documents>`
+fn build_documents_xml(results: &[SearchResult]) -> String {
+    let mut xml = String::from("<documents>");
+
+    for result in results {
+        xml.push_str("<document><id>");
+        xml.push_str(&escape_xml(&result.id));
+        xml.push_str("</id><content>");
+        xml.push_str(&escape_xml(&result.content));
+        xml.push_str("</content></document>");
+    }
+
+    xml.push_str("</documents>");
+    xml
+}
+
+/// Escape XML special characters
+fn escape_xml(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
 
 /// Configuration for the workflow executor
 #[derive(Debug, Clone)]
@@ -136,6 +163,43 @@ impl WorkflowExecutorImpl {
         Ok(prompt.content().to_string())
     }
 
+    /// Render a prompt template with variables
+    ///
+    /// This performs two-phase variable resolution:
+    /// 1. Resolve ${request:*} and ${step:*:*} references in the variable values
+    /// 2. Substitute ${var:*} placeholders in the template with resolved values
+    fn render_prompt_with_variables(
+        &self,
+        template: &str,
+        prompt_variables: &std::collections::HashMap<String, String>,
+        context: &WorkflowContext,
+    ) -> Result<String, WorkflowError> {
+        use crate::domain::PromptTemplate;
+
+        // If no variables provided, just resolve context variables in the template
+        if prompt_variables.is_empty() {
+            return context.resolve_string(template);
+        }
+
+        // Phase 1: Resolve context variables in each prompt_variable value
+        let mut resolved_variables = std::collections::HashMap::new();
+
+        for (key, value) in prompt_variables {
+            let resolved_value = context.resolve_string(value)?;
+            resolved_variables.insert(key.clone(), resolved_value);
+        }
+
+        // Phase 2: Parse and render the prompt template with resolved variables
+        let parsed = PromptTemplate::parse(template)
+            .map_err(|e| WorkflowError::step_execution("prompt_rendering", e.to_string()))?;
+
+        let rendered = parsed.render(&resolved_variables)
+            .map_err(|e| WorkflowError::step_execution("prompt_rendering", e.to_string()))?;
+
+        // Phase 3: Resolve any remaining context variables in the rendered template
+        context.resolve_string(&rendered)
+    }
+
     /// Execute a single step
     async fn execute_step(
         &self,
@@ -173,8 +237,14 @@ impl WorkflowExecutorImpl {
         // Resolve prompt_id to system message content
         let system_template = self.resolve_prompt(&step.prompt_id).await?;
 
-        // The prompt content may contain variable references, resolve them
-        let system_message = context.resolve_string(&system_template)?;
+        // Render the prompt template with prompt_variables
+        // First, resolve any ${request:*} or ${step:*:*} in the variable values
+        // Then, substitute ${var:*} placeholders with the resolved values
+        let system_message = self.render_prompt_with_variables(
+            &system_template,
+            &step.prompt_variables,
+            context,
+        )?;
 
         // Build request
         let mut request_builder = LlmRequest::builder();
@@ -211,12 +281,42 @@ impl WorkflowExecutorImpl {
         // Extract content from response
         let content = response.message.content_text().unwrap_or_default().to_string();
 
-        // Try to parse as JSON, otherwise return as string
-        let output = serde_json::from_str::<Value>(&content).unwrap_or_else(|_| json!({
+        // Build prompt object with exact messages used
+        let prompt = json!({
+            "system": system_message,
+            "user": user_message,
+        });
+
+        // Serialize full response object
+        let response_json = serde_json::to_value(&response).unwrap_or_else(|_| json!({}));
+
+        // Try to parse content as JSON for structured output
+        let parsed_content = serde_json::from_str::<Value>(&content).ok();
+
+        // Build output with prompt and full response
+        let mut output = json!({
             "content": content,
-            "model": response.model,
-            "finish_reason": format!("{:?}", response.finish_reason),
-        }));
+            "prompt": prompt,
+            "response": response_json,
+        });
+
+        // If LLM returned valid JSON, merge fields at top level for backward compatibility
+        // and also store under parsed_content for explicit access
+        if let Some(parsed) = parsed_content {
+            output["parsed_content"] = parsed.clone();
+
+            // Merge parsed JSON object fields at top level for ${step:name:field} access
+            if let Value::Object(map) = parsed {
+                if let Value::Object(ref mut out_map) = output {
+                    for (key, value) in map {
+                        // Don't overwrite reserved fields
+                        if !["content", "prompt", "response", "parsed_content"].contains(&key.as_str()) {
+                            out_map.insert(key, value);
+                        }
+                    }
+                }
+            }
+        }
 
         Ok(output)
     }
@@ -271,8 +371,12 @@ impl WorkflowExecutorImpl {
             })
             .collect();
 
+        // Build XML representation for easy template injection
+        let documents_xml = build_documents_xml(&results);
+
         Ok(json!({
             "documents": documents,
+            "documents_xml": documents_xml,
             "total": documents.len(),
             "knowledge_base_id": step.knowledge_base_id,
             "query": query,
@@ -533,6 +637,89 @@ impl WorkflowExecutorImpl {
 
         Ok(step.default_action.clone())
     }
+
+    /// Build input data for a step (for logging purposes)
+    fn build_step_input(
+        &self,
+        step: &WorkflowStep,
+        context: &WorkflowContext,
+    ) -> Result<Value, WorkflowError> {
+        match step.step_type() {
+            WorkflowStepType::ChatCompletion(chat_step) => {
+                let resolved_user_message = context.resolve_string(&chat_step.user_message)?;
+                Ok(json!({
+                    "model_id": chat_step.model_id,
+                    "prompt_id": chat_step.prompt_id,
+                    "user_message": resolved_user_message,
+                    "temperature": chat_step.temperature,
+                    "max_tokens": chat_step.max_tokens,
+                }))
+            }
+            WorkflowStepType::KnowledgeBaseSearch(kb_step) => {
+                let resolved_query = context.resolve_string(&kb_step.query)?;
+                Ok(json!({
+                    "knowledge_base_id": kb_step.knowledge_base_id,
+                    "query": resolved_query,
+                    "top_k": kb_step.top_k,
+                    "similarity_threshold": kb_step.similarity_threshold,
+                }))
+            }
+            WorkflowStepType::CragScoring(crag_step) => {
+                let resolved_query = context.resolve_string(&crag_step.query)?;
+                let resolved_documents = context.resolve_expression(&crag_step.input_documents)?;
+                Ok(json!({
+                    "query": resolved_query,
+                    "input_documents": resolved_documents,
+                    "threshold": crag_step.threshold,
+                    "strategy": format!("{:?}", crag_step.strategy),
+                }))
+            }
+            WorkflowStepType::Conditional(cond_step) => {
+                let conditions: Vec<Value> = cond_step
+                    .conditions
+                    .iter()
+                    .map(|c| {
+                        let resolved_field = context.resolve_expression(&c.field).ok();
+                        json!({
+                            "field": c.field,
+                            "resolved_value": resolved_field,
+                            "operator": format!("{:?}", c.operator),
+                        })
+                    })
+                    .collect();
+                Ok(json!({
+                    "conditions": conditions,
+                    "default_action": format!("{:?}", cond_step.default_action),
+                }))
+            }
+            WorkflowStepType::HttpRequest(http_step) => {
+                let resolved_path = context.resolve_string(&http_step.path)?;
+                let resolved_body = if let Some(body) = &http_step.body {
+                    Some(resolve_json_variables(body, context)?)
+                } else {
+                    None
+                };
+                Ok(json!({
+                    "external_api_id": http_step.external_api_id,
+                    "method": format!("{:?}", http_step.method),
+                    "path": resolved_path,
+                    "body": resolved_body,
+                    "credential_id": http_step.credential_id,
+                }))
+            }
+        }
+    }
+}
+
+/// Get the step type string from a WorkflowStepType
+fn get_step_type_name(step_type: &WorkflowStepType) -> &'static str {
+    match step_type {
+        WorkflowStepType::ChatCompletion(_) => "chat_completion",
+        WorkflowStepType::KnowledgeBaseSearch(_) => "knowledge_base_search",
+        WorkflowStepType::CragScoring(_) => "crag_scoring",
+        WorkflowStepType::Conditional(_) => "conditional",
+        WorkflowStepType::HttpRequest(_) => "http_request",
+    }
 }
 
 #[async_trait]
@@ -545,6 +732,7 @@ impl WorkflowExecutor for WorkflowExecutorImpl {
         let start = Instant::now();
         let mut step_results = Vec::new();
         let mut context = WorkflowContext::new(input);
+        let mut total_token_usage = WorkflowTokenUsage::default();
 
         // Validate workflow
         if !workflow.is_enabled() {
@@ -568,15 +756,25 @@ impl WorkflowExecutor for WorkflowExecutorImpl {
 
             debug!("Executing step '{}' (index {})", step.name(), step_index);
 
+            let step_type_name = get_step_type_name(step.step_type());
+
+            // Build step input (best effort - if it fails, we still execute the step)
+            let step_input = self.build_step_input(step, &context).ok();
+
             // Handle conditional step specially
             if let WorkflowStepType::Conditional(cond_step) = step.step_type() {
                 let action = self.get_conditional_action(cond_step, &context)?;
 
-                let step_result = StepExecutionResult::success(
+                let mut step_result = StepExecutionResult::success(
                     step.name(),
+                    step_type_name,
                     json!({"action": format!("{:?}", action)}),
                     step_start.elapsed().as_millis() as u64,
                 );
+
+                if let Some(input) = step_input {
+                    step_result = step_result.with_input(input);
+                }
                 step_results.push(step_result);
 
                 match action {
@@ -592,11 +790,17 @@ impl WorkflowExecutor for WorkflowExecutorImpl {
                     }
                     ConditionalAction::EndWorkflow(output) => {
                         let final_output = output.unwrap_or(Value::Null);
-                        return Ok(WorkflowResult::success(
+                        let mut result = WorkflowResult::success(
                             final_output,
                             step_results,
                             start.elapsed().as_millis() as u64,
-                        ));
+                        );
+
+                        if total_token_usage.total_tokens > 0 {
+                            result = result.with_token_usage(total_token_usage);
+                        }
+
+                        return Ok(result);
                     }
                 }
                 continue;
@@ -607,29 +811,66 @@ impl WorkflowExecutor for WorkflowExecutorImpl {
                 Ok(output) => {
                     context.set_step_output(step.name(), output.clone());
 
-                    let step_result = StepExecutionResult::success(
+                    let mut step_result = StepExecutionResult::success(
                         step.name(),
-                        output,
+                        step_type_name,
+                        output.clone(),
                         step_start.elapsed().as_millis() as u64,
                     );
+
+                    // Extract token usage from ChatCompletion step output
+                    if matches!(step.step_type(), WorkflowStepType::ChatCompletion(_)) {
+                        if let Some(usage) = output
+                            .get("response")
+                            .and_then(|r| r.get("usage"))
+                        {
+                            let input_tokens = usage
+                                .get("prompt_tokens")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0) as u32;
+                            let output_tokens = usage
+                                .get("completion_tokens")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0) as u32;
+
+                            let step_usage = WorkflowTokenUsage::new(input_tokens, output_tokens);
+                            total_token_usage.add(&step_usage);
+                            step_result = step_result.with_token_usage(step_usage);
+                        }
+                    }
+
+                    if let Some(input) = step_input {
+                        step_result = step_result.with_input(input);
+                    }
                     step_results.push(step_result);
                     step_index += 1;
                 }
                 Err(e) => {
-                    let step_result = StepExecutionResult::failure(
+                    let mut step_result = StepExecutionResult::failure(
                         step.name(),
+                        step_type_name,
                         e.to_string(),
                         step_start.elapsed().as_millis() as u64,
                     );
+
+                    if let Some(input) = step_input {
+                        step_result = step_result.with_input(input);
+                    }
                     step_results.push(step_result);
 
                     match step.on_error() {
                         OnErrorAction::FailWorkflow => {
-                            return Ok(WorkflowResult::failure(
+                            let mut result = WorkflowResult::failure(
                                 format!("Step '{}' failed: {}", step.name(), e),
                                 step_results,
                                 start.elapsed().as_millis() as u64,
-                            ));
+                            );
+
+                            if total_token_usage.total_tokens > 0 {
+                                result = result.with_token_usage(total_token_usage);
+                            }
+
+                            return Ok(result);
                         }
                         OnErrorAction::SkipStep => {
                             debug!("Skipping failed step '{}'", step.name());
@@ -648,11 +889,18 @@ impl WorkflowExecutor for WorkflowExecutorImpl {
             .and_then(|r| r.output.clone())
             .unwrap_or(Value::Null);
 
-        Ok(WorkflowResult::success(
+        // Build result with token usage if any tokens were consumed
+        let mut result = WorkflowResult::success(
             final_output,
             step_results,
             start.elapsed().as_millis() as u64,
-        ))
+        );
+
+        if total_token_usage.total_tokens > 0 {
+            result = result.with_token_usage(total_token_usage);
+        }
+
+        Ok(result)
     }
 }
 

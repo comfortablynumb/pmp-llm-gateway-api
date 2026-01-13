@@ -5,21 +5,21 @@ use async_trait::async_trait;
 use crate::domain::error::DomainError;
 
 use super::{
-    AppConfiguration, ConfigKey, ConfigValue, ExecutionLog, ExecutionLogId, ExecutionLogQuery,
-    ExecutionStats,
+    AppConfiguration, ConfigEntry, ConfigKey, ConfigValue, ExecutionLog, ExecutionLogId,
+    ExecutionLogQuery, ExecutionStats,
 };
 
 /// Repository trait for application configuration
 #[async_trait]
 pub trait ConfigRepository: Send + Sync {
-    /// Get the current configuration
+    /// Get the current configuration (loads all entries from storage)
     async fn get(&self) -> Result<AppConfiguration, DomainError>;
+
+    /// Get a single configuration entry by key
+    async fn get_entry(&self, key: &str) -> Result<Option<ConfigEntry>, DomainError>;
 
     /// Update a configuration value
     async fn set(&self, key: &ConfigKey, value: ConfigValue) -> Result<(), DomainError>;
-
-    /// Reset configuration to defaults
-    async fn reset(&self) -> Result<(), DomainError>;
 }
 
 /// Repository trait for execution logs

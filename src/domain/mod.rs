@@ -32,10 +32,10 @@ pub use chain::{
     FallbackBehavior, ModelChain, RetryConfig, StepResult,
 };
 pub use config::{
-    AppConfiguration, AppConfigurationId, ConfigCategory, ConfigEntry, ConfigKey,
-    ConfigRepository, ConfigValidationError, ConfigValue, ExecutionLog, ExecutionLogId,
-    ExecutionLogQuery, ExecutionLogRepository, ExecutionLogValidationError, ExecutionStats,
-    ExecutionStatus, ExecutionType, Executor, TokenUsage as ExecutionTokenUsage, WorkflowStepLog,
+    AppConfiguration, ConfigCategory, ConfigEntry, ConfigKey, ConfigMetadata, ConfigRepository,
+    ConfigValidationError, ConfigValue, ExecutionLog, ExecutionLogId, ExecutionLogQuery,
+    ExecutionLogRepository, ExecutionLogValidationError, ExecutionStats, ExecutionStatus,
+    ExecutionType, Executor, TokenUsage as ExecutionTokenUsage, WorkflowStepLog,
 };
 pub use credentials::{
     Credential, CredentialId, CredentialProvider, CredentialType, StoredCredential,
@@ -81,6 +81,7 @@ pub use workflow::{
     CragScoringStep, HttpMethod, HttpRequestStep, KnowledgeBaseSearchStep, OnErrorAction,
     StepExecutionResult, VariableRef, Workflow, WorkflowContext, WorkflowError, WorkflowExecutor,
     WorkflowId, WorkflowRepository, WorkflowResult, WorkflowStep, WorkflowStepType,
+    WorkflowTokenUsage,
 };
 pub use user::{
     validate_password, validate_user_id, validate_username, User, UserId, UserRepository,

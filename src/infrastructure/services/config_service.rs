@@ -42,11 +42,6 @@ impl ConfigService {
         self.repository.set(&config_key, value).await
     }
 
-    /// Reset configuration to defaults
-    pub async fn reset(&self) -> Result<(), DomainError> {
-        self.repository.reset().await
-    }
-
     /// List all configuration entries
     pub async fn list(&self) -> Result<Vec<ConfigEntry>, DomainError> {
         let config = self.repository.get().await?;
@@ -114,13 +109,10 @@ impl ConfigService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::AppConfiguration;
-    use crate::infrastructure::config::StorageConfigRepository;
-    use crate::infrastructure::storage::InMemoryStorage;
+    use crate::infrastructure::config::InMemoryConfigRepository;
 
     fn create_service() -> ConfigService {
-        let storage = Arc::new(InMemoryStorage::<AppConfiguration>::new());
-        let repository = Arc::new(StorageConfigRepository::new(storage));
+        let repository = Arc::new(InMemoryConfigRepository::with_defaults());
         ConfigService::new(repository)
     }
 
@@ -143,21 +135,6 @@ mod tests {
 
         let value = service.get_value("persistence.enabled").await.unwrap();
         assert_eq!(value, Some(ConfigValue::Boolean(true)));
-    }
-
-    #[tokio::test]
-    async fn test_reset_config() {
-        let service = create_service();
-
-        service
-            .set("persistence.enabled", ConfigValue::Boolean(true))
-            .await
-            .unwrap();
-
-        service.reset().await.unwrap();
-
-        let value = service.get_value("persistence.enabled").await.unwrap();
-        assert_eq!(value.and_then(|v| v.as_boolean()), Some(false));
     }
 
     #[tokio::test]

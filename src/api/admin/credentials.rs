@@ -1,16 +1,13 @@
 //! Credentials management admin endpoints
 
-use axum::{
-    extract::{Path, State},
-    Json,
-};
+use axum::extract::{Path, State};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use tracing::debug;
 
 use crate::api::middleware::RequireAdmin;
 use crate::api::state::AppState;
-use crate::api::types::ApiError;
+use crate::api::types::{ApiError, Json};
 use crate::domain::credentials::{Credential, CredentialType, StoredCredential};
 use crate::domain::llm::{LlmRequest, Message};
 use crate::infrastructure::llm::{LlmProviderConfig, LlmProviderFactory};

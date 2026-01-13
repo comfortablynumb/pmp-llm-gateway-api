@@ -1,14 +1,11 @@
 //! Execution log management admin endpoints
 
-use axum::{
-    extract::{Path, Query, State},
-    Json,
-};
+use axum::extract::{Path, Query, State};
 use serde::{Deserialize, Serialize};
 
 use crate::api::middleware::RequireAdmin;
 use crate::api::state::AppState;
-use crate::api::types::ApiError;
+use crate::api::types::{ApiError, Json};
 use crate::domain::{ExecutionLogQuery, ExecutionStatus, ExecutionType};
 
 /// Execution log response

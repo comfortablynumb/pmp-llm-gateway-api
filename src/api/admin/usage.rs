@@ -1,14 +1,11 @@
 //! Usage tracking and budget management admin endpoints
 
-use axum::{
-    extract::{Path, Query, State},
-    Json,
-};
+use axum::extract::{Path, Query, State};
 use serde::{Deserialize, Serialize};
 
 use crate::api::middleware::RequireAdmin;
 use crate::api::state::AppState;
-use crate::api::types::error::ApiError;
+use crate::api::types::{ApiError, Json};
 use crate::domain::usage::{
     Budget, BudgetId, BudgetPeriod, BudgetScope, UsageAggregate, UsageRecord, UsageSummary,
 };

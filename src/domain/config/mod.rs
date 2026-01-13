@@ -5,7 +5,7 @@ mod execution_log;
 mod repository;
 
 pub use entity::{
-    AppConfiguration, AppConfigurationId, ConfigCategory, ConfigEntry, ConfigKey,
+    AppConfiguration, ConfigCategory, ConfigEntry, ConfigKey, ConfigMetadata,
     ConfigValidationError, ConfigValue,
 };
 pub use execution_log::{

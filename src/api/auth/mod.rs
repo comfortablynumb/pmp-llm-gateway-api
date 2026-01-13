@@ -5,14 +5,14 @@
 use axum::{
     extract::State,
     routing::{get, post},
-    Json, Router,
+    Router,
 };
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::api::middleware::RequireUser;
 use crate::api::state::AppState;
-use crate::api::types::ApiError;
+use crate::api::types::{ApiError, Json};
 
 /// Create the authentication router
 pub fn create_auth_router() -> Router<AppState> {

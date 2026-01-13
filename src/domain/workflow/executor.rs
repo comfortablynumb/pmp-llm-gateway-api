@@ -7,6 +7,35 @@ use serde_json::Value;
 use super::entity::Workflow;
 use super::error::WorkflowError;
 
+/// Token usage for a workflow or step
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WorkflowTokenUsage {
+    /// Input/prompt tokens
+    pub input_tokens: u32,
+    /// Output/completion tokens
+    pub output_tokens: u32,
+    /// Total tokens
+    pub total_tokens: u32,
+}
+
+impl WorkflowTokenUsage {
+    /// Create new token usage
+    pub fn new(input_tokens: u32, output_tokens: u32) -> Self {
+        Self {
+            input_tokens,
+            output_tokens,
+            total_tokens: input_tokens + output_tokens,
+        }
+    }
+
+    /// Add another usage to this one
+    pub fn add(&mut self, other: &WorkflowTokenUsage) {
+        self.input_tokens += other.input_tokens;
+        self.output_tokens += other.output_tokens;
+        self.total_tokens += other.total_tokens;
+    }
+}
+
 /// Result of executing a workflow
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkflowResult {
@@ -25,6 +54,14 @@ pub struct WorkflowResult {
     /// Error message if workflow failed
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+
+    /// Total token usage across all LLM steps
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_usage: Option<WorkflowTokenUsage>,
+
+    /// Total cost in micro-dollars (1/1,000,000 of a dollar)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_micros: Option<i64>,
 }
 
 impl WorkflowResult {
@@ -36,6 +73,8 @@ impl WorkflowResult {
             step_results,
             execution_time_ms,
             error: None,
+            token_usage: None,
+            cost_micros: None,
         }
     }
 
@@ -51,7 +90,21 @@ impl WorkflowResult {
             step_results,
             execution_time_ms,
             error: Some(error.into()),
+            token_usage: None,
+            cost_micros: None,
         }
+    }
+
+    /// Add token usage to the result
+    pub fn with_token_usage(mut self, usage: WorkflowTokenUsage) -> Self {
+        self.token_usage = Some(usage);
+        self
+    }
+
+    /// Add cost to the result
+    pub fn with_cost(mut self, cost_micros: i64) -> Self {
+        self.cost_micros = Some(cost_micros);
+        self
     }
 
     /// Get the last successful step's output
@@ -70,8 +123,15 @@ pub struct StepExecutionResult {
     /// Step name
     pub step_name: String,
 
+    /// Step type (e.g., "chat_completion", "knowledge_base_search")
+    pub step_type: String,
+
     /// Whether the step executed successfully
     pub success: bool,
+
+    /// Step input data
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<Value>,
 
     /// Step output if successful
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -87,43 +147,91 @@ pub struct StepExecutionResult {
     /// Whether step was skipped
     #[serde(default)]
     pub skipped: bool,
+
+    /// Token usage for LLM steps
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_usage: Option<WorkflowTokenUsage>,
+
+    /// Cost in micro-dollars for this step
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_micros: Option<i64>,
 }
 
 impl StepExecutionResult {
     /// Create a successful step result
-    pub fn success(step_name: impl Into<String>, output: Value, execution_time_ms: u64) -> Self {
+    pub fn success(
+        step_name: impl Into<String>,
+        step_type: impl Into<String>,
+        output: Value,
+        execution_time_ms: u64,
+    ) -> Self {
         Self {
             step_name: step_name.into(),
+            step_type: step_type.into(),
             success: true,
+            input: None,
             output: Some(output),
             error: None,
             execution_time_ms,
             skipped: false,
+            token_usage: None,
+            cost_micros: None,
         }
     }
 
     /// Create a failed step result
-    pub fn failure(step_name: impl Into<String>, error: impl Into<String>, execution_time_ms: u64) -> Self {
+    pub fn failure(
+        step_name: impl Into<String>,
+        step_type: impl Into<String>,
+        error: impl Into<String>,
+        execution_time_ms: u64,
+    ) -> Self {
         Self {
             step_name: step_name.into(),
+            step_type: step_type.into(),
             success: false,
+            input: None,
             output: None,
             error: Some(error.into()),
             execution_time_ms,
             skipped: false,
+            token_usage: None,
+            cost_micros: None,
         }
     }
 
     /// Create a skipped step result
-    pub fn skipped(step_name: impl Into<String>) -> Self {
+    pub fn skipped(step_name: impl Into<String>, step_type: impl Into<String>) -> Self {
         Self {
             step_name: step_name.into(),
+            step_type: step_type.into(),
             success: true,
+            input: None,
             output: None,
             error: None,
             execution_time_ms: 0,
             skipped: true,
+            token_usage: None,
+            cost_micros: None,
         }
+    }
+
+    /// Add input data to the step result
+    pub fn with_input(mut self, input: Value) -> Self {
+        self.input = Some(input);
+        self
+    }
+
+    /// Add token usage to the step result
+    pub fn with_token_usage(mut self, usage: WorkflowTokenUsage) -> Self {
+        self.token_usage = Some(usage);
+        self
+    }
+
+    /// Add cost to the step result
+    pub fn with_cost(mut self, cost_micros: i64) -> Self {
+        self.cost_micros = Some(cost_micros);
+        self
     }
 }
 
@@ -146,8 +254,8 @@ mod tests {
     #[test]
     fn test_workflow_result_success() {
         let step_results = vec![
-            StepExecutionResult::success("step1", json!({"result": "ok"}), 100),
-            StepExecutionResult::success("step2", json!({"final": true}), 200),
+            StepExecutionResult::success("step1", "chat_completion", json!({"result": "ok"}), 100),
+            StepExecutionResult::success("step2", "chat_completion", json!({"final": true}), 200),
         ];
 
         let result = WorkflowResult::success(json!({"answer": "42"}), step_results, 300);
@@ -161,7 +269,12 @@ mod tests {
 
     #[test]
     fn test_workflow_result_failure() {
-        let step_results = vec![StepExecutionResult::failure("step1", "Something went wrong", 50)];
+        let step_results = vec![StepExecutionResult::failure(
+            "step1",
+            "chat_completion",
+            "Something went wrong",
+            50,
+        )];
 
         let result = WorkflowResult::failure("Step failed", step_results, 50);
 
@@ -172,10 +285,12 @@ mod tests {
 
     #[test]
     fn test_step_result_success() {
-        let result = StepExecutionResult::success("my-step", json!({"data": 123}), 150);
+        let result =
+            StepExecutionResult::success("my-step", "chat_completion", json!({"data": 123}), 150);
 
         assert!(result.success);
         assert_eq!(result.step_name, "my-step");
+        assert_eq!(result.step_type, "chat_completion");
         assert_eq!(result.output, Some(json!({"data": 123})));
         assert!(result.error.is_none());
         assert!(!result.skipped);
@@ -183,7 +298,7 @@ mod tests {
 
     #[test]
     fn test_step_result_skipped() {
-        let result = StepExecutionResult::skipped("skipped-step");
+        let result = StepExecutionResult::skipped("skipped-step", "chat_completion");
 
         assert!(result.success);
         assert!(result.skipped);
@@ -192,11 +307,21 @@ mod tests {
     }
 
     #[test]
+    fn test_step_result_with_input() {
+        let result =
+            StepExecutionResult::success("my-step", "chat_completion", json!({"data": 123}), 150)
+                .with_input(json!({"user_message": "Hello"}));
+
+        assert_eq!(result.input, Some(json!({"user_message": "Hello"})));
+        assert_eq!(result.output, Some(json!({"data": 123})));
+    }
+
+    #[test]
     fn test_last_step_output() {
         let step_results = vec![
-            StepExecutionResult::success("step1", json!({"first": true}), 100),
-            StepExecutionResult::failure("step2", "failed", 50),
-            StepExecutionResult::success("step3", json!({"last": true}), 100),
+            StepExecutionResult::success("step1", "chat_completion", json!({"first": true}), 100),
+            StepExecutionResult::failure("step2", "chat_completion", "failed", 50),
+            StepExecutionResult::success("step3", "chat_completion", json!({"last": true}), 100),
         ];
 
         let result = WorkflowResult::success(json!({}), step_results, 250);
@@ -208,15 +333,21 @@ mod tests {
     fn test_serialization() {
         let result = WorkflowResult::success(
             json!({"answer": "42"}),
-            vec![StepExecutionResult::success("step1", json!({"ok": true}), 100)],
+            vec![StepExecutionResult::success(
+                "step1",
+                "chat_completion",
+                json!({"ok": true}),
+                100,
+            )],
             100,
         );
 
-        let json = serde_json::to_string(&result).unwrap();
-        assert!(json.contains("\"success\":true"));
-        assert!(json.contains("\"answer\":\"42\""));
+        let json_str = serde_json::to_string(&result).unwrap();
+        assert!(json_str.contains("\"success\":true"));
+        assert!(json_str.contains("\"answer\":\"42\""));
+        assert!(json_str.contains("\"step_type\":\"chat_completion\""));
 
-        let deserialized: WorkflowResult = serde_json::from_str(&json).unwrap();
+        let deserialized: WorkflowResult = serde_json::from_str(&json_str).unwrap();
         assert!(deserialized.success);
     }
 }

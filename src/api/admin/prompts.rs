@@ -1,16 +1,13 @@
 //! Prompt management admin endpoints
 
-use axum::{
-    extract::{Path, State},
-    Json,
-};
+use axum::extract::{Path, State};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::debug;
 
 use crate::api::middleware::RequireAdmin;
 use crate::api::state::AppState;
-use crate::api::types::ApiError;
+use crate::api::types::{ApiError, Json};
 use crate::domain::prompt::{Prompt, PromptVersion};
 use crate::infrastructure::services::{CreatePromptRequest, UpdatePromptRequest};
 

@@ -19,7 +19,7 @@ use std::sync::Arc;
 use api::state::AppState;
 use domain::{
     api_key::ApiKeyPermissions,
-    config::{AppConfiguration, ExecutionLog},
+    config::ExecutionLog,
     credentials::{CredentialId, StoredCredential},
     knowledge_base::{EmbeddingConfig, KnowledgeBase, KnowledgeBaseId, KnowledgeBaseType},
     team::Team,
@@ -33,7 +33,7 @@ use domain::{
 use infrastructure::{
     api_key::{ApiKeyGenerator, ApiKeyService, InMemoryApiKeyRepository, StorageApiKeyRepository},
     auth::{JwtConfig, JwksJwtService, JwtService},
-    config::{StorageConfigRepository, StorageExecutionLogRepository},
+    config::{InMemoryConfigRepository, PostgresConfigRepository, StorageExecutionLogRepository},
     credentials::{CredentialService, InMemoryStoredCredentialRepository, StorageStoredCredentialRepository},
     experiment::{
         InMemoryExperimentRecordRepository, InMemoryExperimentRepository,
@@ -407,15 +407,11 @@ pub async fn create_app_state_with_config(config: &AppConfig) -> anyhow::Result<
         };
 
     // Configuration service
-    let config_storage: Arc<dyn StorageTrait<AppConfiguration>> = if use_postgres {
-        StorageFactory::create_postgres_with_pool::<AppConfiguration>(
-            pg_pool.clone(),
-            "app_configurations",
-        )
+    let config_repository: Arc<dyn domain::ConfigRepository> = if use_postgres {
+        Arc::new(PostgresConfigRepository::new(pg_pool.clone()))
     } else {
-        Arc::new(InMemoryStorage::<AppConfiguration>::new())
+        Arc::new(InMemoryConfigRepository::with_defaults())
     };
-    let config_repository = Arc::new(StorageConfigRepository::new(config_storage));
     let config_service = Arc::new(ConfigService::new(config_repository.clone()));
 
     // Execution log service

@@ -532,8 +532,6 @@ pub trait ConfigServiceTrait: Send + Sync {
     async fn get_value(&self, key: &str) -> Result<Option<ConfigValue>, DomainError>;
     /// Set a configuration value
     async fn set(&self, key: &str, value: ConfigValue) -> Result<(), DomainError>;
-    /// Reset configuration to defaults
-    async fn reset(&self) -> Result<(), DomainError>;
 }
 
 /// Trait for execution log service operations
@@ -1376,10 +1374,6 @@ impl ConfigServiceTrait for ConfigService {
 
     async fn set(&self, key: &str, value: ConfigValue) -> Result<(), DomainError> {
         ConfigService::set(self, key, value).await
-    }
-
-    async fn reset(&self) -> Result<(), DomainError> {
-        ConfigService::reset(self).await
     }
 }
 

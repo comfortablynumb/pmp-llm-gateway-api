@@ -2,4 +2,6 @@
 
 mod repository;
 
-pub use repository::{StorageConfigRepository, StorageExecutionLogRepository};
+pub use repository::{
+    InMemoryConfigRepository, PostgresConfigRepository, StorageExecutionLogRepository,
+};

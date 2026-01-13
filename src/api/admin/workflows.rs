@@ -3,19 +3,16 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use axum::{
-    extract::{Path, State},
-    Json,
-};
+use axum::extract::{Path, State};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::debug;
 
 use crate::api::middleware::{AdminAuth, RequireAdmin};
 use crate::api::state::AppState;
-use crate::api::types::ApiError;
+use crate::api::types::{ApiError, Json};
 use crate::domain::workflow::{OnErrorAction, Workflow, WorkflowStep, WorkflowStepType};
-use crate::domain::{ExecutionStatus, Executor, WorkflowStepLog};
+use crate::domain::{ExecutionStatus, ExecutionTokenUsage, Executor, WorkflowStepLog};
 use crate::infrastructure::services::{CreateWorkflowRequest, RecordExecutionParams, UpdateWorkflowRequest};
 
 /// Request to create a new workflow
@@ -493,9 +490,13 @@ pub async fn execute_workflow(
                 ExecutionStatus::Failed
             };
 
-            let mut step_log = WorkflowStepLog::new(&sr.step_name, "workflow_step")
+            let mut step_log = WorkflowStepLog::new(&sr.step_name, &sr.step_type)
                 .with_execution_time(sr.execution_time_ms)
                 .with_status(status);
+
+            if let Some(input) = &sr.input {
+                step_log = step_log.with_input(input.clone());
+            }
 
             if let Some(output) = &sr.output {
                 step_log = step_log.with_output(output.clone());
@@ -509,8 +510,8 @@ pub async fn execute_workflow(
         })
         .collect();
 
-    // Record execution log with input, output, and workflow steps
-    let log_params = if result.success {
+    // Record execution log with input, output, workflow steps, and token usage
+    let mut log_params = if result.success {
         RecordExecutionParams::workflow_success(
             &workflow_id,
             result.execution_time_ms,
@@ -529,6 +530,14 @@ pub async fn execute_workflow(
         .with_input(input_for_log)
         .with_workflow_steps(workflow_step_logs)
     };
+
+    // Add token usage if present
+    if let Some(usage) = &result.token_usage {
+        log_params = log_params.with_token_usage(ExecutionTokenUsage::new(
+            usage.input_tokens,
+            usage.output_tokens,
+        ));
+    }
 
     if let Err(e) = state.execution_log_service.record(log_params).await {
         debug!(error = %e, "Failed to record execution log");
@@ -723,6 +732,7 @@ mod tests {
                 model_id: "gpt-4".to_string(),
                 prompt_id: "prompt".to_string(),
                 user_message: "Hello".to_string(),
+                prompt_variables: std::collections::HashMap::new(),
                 temperature: None,
                 max_tokens: None,
                 top_p: None,
@@ -751,6 +761,7 @@ mod tests {
                 model_id: "m".to_string(),
                 prompt_id: "p".to_string(),
                 user_message: "u".to_string(),
+                prompt_variables: std::collections::HashMap::new(),
                 temperature: None,
                 max_tokens: None,
                 top_p: None,

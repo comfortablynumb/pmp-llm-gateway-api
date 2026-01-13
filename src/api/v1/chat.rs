@@ -7,8 +7,9 @@ use axum::{
         sse::{Event, Sse},
         IntoResponse, Response,
     },
-    Json,
 };
+
+use crate::api::types::Json;
 use futures::stream::{Stream, StreamExt};
 use serde_json::json;
 use tokio_stream::wrappers::ReceiverStream;

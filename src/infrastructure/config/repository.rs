@@ -1,76 +1,295 @@
-//! Storage-backed implementations for configuration and execution log repositories
+//! Configuration and execution log repository implementations
 
 use async_trait::async_trait;
+use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use crate::domain::{
     config::{
-        AppConfiguration, AppConfigurationId, ConfigKey, ConfigRepository, ConfigValue,
-        ExecutionLog, ExecutionLogId, ExecutionLogQuery, ExecutionLogRepository, ExecutionStats,
-        ExecutionStatus,
+        AppConfiguration, ConfigCategory, ConfigEntry, ConfigKey, ConfigMetadata,
+        ConfigRepository, ConfigValue, ExecutionLog, ExecutionLogId, ExecutionLogQuery,
+        ExecutionLogRepository, ExecutionStats, ExecutionStatus,
     },
     storage::{Storage, StorageEntity},
     DomainError,
 };
 
-/// Storage-backed configuration repository
-pub struct StorageConfigRepository {
-    storage: Arc<dyn Storage<AppConfiguration>>,
+/// PostgreSQL-backed configuration repository
+pub struct PostgresConfigRepository {
+    pool: sqlx::PgPool,
 }
 
-impl StorageConfigRepository {
-    pub fn new(storage: Arc<dyn Storage<AppConfiguration>>) -> Self {
-        Self { storage }
+impl PostgresConfigRepository {
+    pub fn new(pool: sqlx::PgPool) -> Self {
+        Self { pool }
     }
 }
 
 #[async_trait]
-impl ConfigRepository for StorageConfigRepository {
+impl ConfigRepository for PostgresConfigRepository {
     async fn get(&self) -> Result<AppConfiguration, DomainError> {
-        let key = AppConfigurationId::singleton();
+        let rows = sqlx::query_as::<_, ConfigRow>(
+            "SELECT key, value, metadata, created_at, updated_at FROM app_configurations ORDER BY key",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("Failed to fetch config: {}", e)))?;
 
-        match self.storage.get(&key).await? {
-            Some(config) => Ok(config),
-            None => {
-                // Return defaults if not found (first run)
-                Ok(AppConfiguration::with_defaults())
-            }
+        let entries: Vec<ConfigEntry> = rows
+            .into_iter()
+            .filter_map(|row| row.try_into_entry().ok())
+            .collect();
+
+        Ok(AppConfiguration::from_entries(entries))
+    }
+
+    async fn get_entry(&self, key: &str) -> Result<Option<ConfigEntry>, DomainError> {
+        let row = sqlx::query_as::<_, ConfigRow>(
+            "SELECT key, value, metadata, created_at, updated_at FROM app_configurations WHERE key = $1",
+        )
+        .bind(key)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("Failed to fetch config entry: {}", e)))?;
+
+        match row {
+            Some(r) => r
+                .try_into_entry()
+                .map(Some)
+                .map_err(|e| DomainError::internal(format!("Failed to parse config entry: {}", e))),
+            None => Ok(None),
         }
     }
 
     async fn set(&self, key: &ConfigKey, value: ConfigValue) -> Result<(), DomainError> {
-        let storage_key = AppConfigurationId::singleton();
+        let value_json = serde_json::to_value(&value)
+            .map_err(|e| DomainError::internal(format!("Failed to serialize value: {}", e)))?;
 
-        // Get current config or defaults
-        let mut config = match self.storage.get(&storage_key).await? {
-            Some(c) => c,
-            None => AppConfiguration::with_defaults(),
-        };
+        let result = sqlx::query(
+            "UPDATE app_configurations SET value = $2, updated_at = NOW() WHERE key = $1",
+        )
+        .bind(key.as_str())
+        .bind(value_json)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DomainError::internal(format!("Failed to update config: {}", e)))?;
 
-        // Update the value
-        config.set(key.clone(), value).map_err(|e| {
-            DomainError::validation(format!("Configuration validation error: {}", e))
-        })?;
-
-        // Save back (create if not exists, update if exists)
-        if self.storage.exists(&storage_key).await? {
-            self.storage.update(config).await?;
-        } else {
-            self.storage.create(config).await?;
+        if result.rows_affected() == 0 {
+            return Err(DomainError::not_found(format!(
+                "Configuration key not found: {}",
+                key
+            )));
         }
 
         Ok(())
     }
+}
 
-    async fn reset(&self) -> Result<(), DomainError> {
-        let key = AppConfigurationId::singleton();
+/// Row structure from app_configurations table
+#[derive(sqlx::FromRow)]
+struct ConfigRow {
+    key: String,
+    value: serde_json::Value,
+    metadata: serde_json::Value,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
+}
 
-        // Delete existing and create fresh defaults
-        let _ = self.storage.delete(&key).await?;
-        self.storage.create(AppConfiguration::with_defaults()).await?;
+impl ConfigRow {
+    fn try_into_entry(self) -> Result<ConfigEntry, String> {
+        let config_key =
+            ConfigKey::new(&self.key).map_err(|e| format!("Invalid config key: {}", e))?;
 
-        Ok(())
+        let config_value: ConfigValue = serde_json::from_value(self.value)
+            .map_err(|e| format!("Invalid config value: {}", e))?;
+
+        let metadata: ConfigMetadata = serde_json::from_value(self.metadata)
+            .map_err(|e| format!("Invalid config metadata: {}", e))?;
+
+        Ok(
+            ConfigEntry::new(config_key, config_value, metadata)
+                .with_timestamps(self.created_at, self.updated_at),
+        )
     }
+}
+
+/// In-memory configuration repository (for testing)
+pub struct InMemoryConfigRepository {
+    entries: RwLock<HashMap<String, ConfigEntry>>,
+}
+
+impl InMemoryConfigRepository {
+    pub fn new() -> Self {
+        Self {
+            entries: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Create with default configuration entries (mimics migration seed)
+    pub fn with_defaults() -> Self {
+        // Create default entries matching the migration
+        let defaults = create_default_entries();
+
+        let mut entries = HashMap::new();
+        for entry in defaults {
+            entries.insert(entry.key().as_str().to_string(), entry);
+        }
+
+        Self {
+            entries: RwLock::new(entries),
+        }
+    }
+}
+
+impl Default for InMemoryConfigRepository {
+    fn default() -> Self {
+        Self::with_defaults()
+    }
+}
+
+#[async_trait]
+impl ConfigRepository for InMemoryConfigRepository {
+    async fn get(&self) -> Result<AppConfiguration, DomainError> {
+        let entries = self.entries.read().await;
+        let entry_list: Vec<ConfigEntry> = entries.values().cloned().collect();
+        Ok(AppConfiguration::from_entries(entry_list))
+    }
+
+    async fn get_entry(&self, key: &str) -> Result<Option<ConfigEntry>, DomainError> {
+        let entries = self.entries.read().await;
+        Ok(entries.get(key).cloned())
+    }
+
+    async fn set(&self, key: &ConfigKey, value: ConfigValue) -> Result<(), DomainError> {
+        let mut entries = self.entries.write().await;
+
+        if let Some(entry) = entries.get_mut(key.as_str()) {
+            // Validate type matches
+            if entry.value().type_name() != value.type_name() {
+                return Err(DomainError::validation(format!(
+                    "Type mismatch for key '{}': expected {}, got {}",
+                    key,
+                    entry.value().type_name(),
+                    value.type_name()
+                )));
+            }
+            entry.set_value(value);
+            Ok(())
+        } else {
+            Err(DomainError::not_found(format!(
+                "Configuration key not found: {}",
+                key
+            )))
+        }
+    }
+}
+
+/// Create default configuration entries (matches migration seed)
+fn create_default_entries() -> Vec<ConfigEntry> {
+    vec![
+        // Persistence settings
+        create_entry(
+            "persistence.enabled",
+            ConfigValue::Boolean(false),
+            ConfigCategory::Persistence,
+            "Enable execution logging",
+        ),
+        create_entry(
+            "persistence.enabled_models",
+            ConfigValue::StringList(vec![]),
+            ConfigCategory::Persistence,
+            "List of model IDs to log executions for (empty = all if enabled)",
+        ),
+        create_entry(
+            "persistence.enabled_workflows",
+            ConfigValue::StringList(vec![]),
+            ConfigCategory::Persistence,
+            "List of workflow IDs to log executions for (empty = all if enabled)",
+        ),
+        create_entry(
+            "persistence.log_retention_days",
+            ConfigValue::Integer(30),
+            ConfigCategory::Persistence,
+            "Number of days to retain execution logs",
+        ),
+        create_entry(
+            "persistence.log_sensitive_data",
+            ConfigValue::Boolean(false),
+            ConfigCategory::Persistence,
+            "Whether to log full input/output (may contain sensitive data)",
+        ),
+        // Logging settings
+        create_entry(
+            "logging.level",
+            ConfigValue::String("info".to_string()),
+            ConfigCategory::Logging,
+            "Log level (trace, debug, info, warn, error)",
+        ),
+        create_entry(
+            "logging.format",
+            ConfigValue::String("json".to_string()),
+            ConfigCategory::Logging,
+            "Log format (json, pretty)",
+        ),
+        // Cache settings
+        create_entry(
+            "cache.enabled",
+            ConfigValue::Boolean(true),
+            ConfigCategory::Cache,
+            "Enable response caching",
+        ),
+        create_entry(
+            "cache.ttl_seconds",
+            ConfigValue::Integer(3600),
+            ConfigCategory::Cache,
+            "Cache TTL in seconds",
+        ),
+        create_entry(
+            "cache.max_entries",
+            ConfigValue::Integer(10000),
+            ConfigCategory::Cache,
+            "Maximum cache entries",
+        ),
+        // Security settings
+        create_entry(
+            "security.require_api_key",
+            ConfigValue::Boolean(true),
+            ConfigCategory::Security,
+            "Require API key for all requests",
+        ),
+        create_entry(
+            "security.allowed_origins",
+            ConfigValue::StringList(vec!["*".to_string()]),
+            ConfigCategory::Security,
+            "Allowed CORS origins",
+        ),
+        // Rate limit settings
+        create_entry(
+            "rate_limit.enabled",
+            ConfigValue::Boolean(true),
+            ConfigCategory::RateLimit,
+            "Enable rate limiting",
+        ),
+        create_entry(
+            "rate_limit.default_rpm",
+            ConfigValue::Integer(60),
+            ConfigCategory::RateLimit,
+            "Default requests per minute",
+        ),
+    ]
+}
+
+fn create_entry(
+    key: &str,
+    value: ConfigValue,
+    category: ConfigCategory,
+    description: &str,
+) -> ConfigEntry {
+    let config_key = ConfigKey::new(key).expect("Invalid default config key");
+    let metadata =
+        ConfigMetadata::new(category, description).with_value_type(value.type_name());
+    ConfigEntry::new(config_key, value, metadata)
 }
 
 /// Storage-backed execution log repository
@@ -264,9 +483,8 @@ mod tests {
     use crate::domain::config::{ExecutionType, Executor, TokenUsage};
     use crate::infrastructure::storage::InMemoryStorage;
 
-    fn create_config_repo() -> StorageConfigRepository {
-        let storage = Arc::new(InMemoryStorage::<AppConfiguration>::new());
-        StorageConfigRepository::new(storage)
+    fn create_config_repo() -> InMemoryConfigRepository {
+        InMemoryConfigRepository::with_defaults()
     }
 
     fn create_log_repo() -> StorageExecutionLogRepository {
@@ -295,15 +513,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_config_repository_reset() {
+    async fn test_config_repository_get_entry() {
+        let repo = create_config_repo();
+
+        let entry = repo.get_entry("persistence.enabled").await.unwrap();
+        assert!(entry.is_some());
+        assert_eq!(entry.unwrap().value().as_boolean(), Some(false));
+
+        let entry = repo.get_entry("nonexistent.key").await.unwrap();
+        assert!(entry.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_config_repository_type_mismatch() {
         let repo = create_config_repo();
         let key = ConfigKey::new("persistence.enabled").unwrap();
 
-        repo.set(&key, ConfigValue::Boolean(true)).await.unwrap();
-        repo.reset().await.unwrap();
-
-        let config = repo.get().await.unwrap();
-        assert!(!config.is_persistence_enabled());
+        let result = repo.set(&key, ConfigValue::String("true".to_string())).await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]

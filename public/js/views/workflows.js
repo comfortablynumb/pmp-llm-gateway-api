@@ -5,6 +5,8 @@ const Workflows = (function() {
     // Current steps being edited
     let currentSteps = [];
     let editingStepIndex = null;
+    // Current workflow input schema for variable picker
+    let currentInputSchema = null;
 
     async function render() {
         $('#content').html(Utils.renderLoading());
@@ -286,7 +288,10 @@ const Workflows = (function() {
         let details = '';
 
         if (step.type === 'chat_completion') {
-            details = `<div class="text-xs mt-1 opacity-75">Model: ${Utils.escapeHtml(step.model_id || 'N/A')}</div>`;
+            details = `
+                <div class="text-xs mt-1 opacity-75">Model: ${Utils.escapeHtml(step.model_id || 'N/A')}</div>
+                <div class="text-xs opacity-75">Prompt: ${Utils.escapeHtml(step.prompt_id || 'N/A')}</div>
+            `;
         } else if (step.type === 'knowledge_base_search') {
             details = `<div class="text-xs mt-1 opacity-75">KB: ${Utils.escapeHtml(step.knowledge_base_id || 'N/A')}</div>`;
         } else if (step.type === 'crag_scoring') {
@@ -306,6 +311,7 @@ const Workflows = (function() {
         const isEdit = !!workflow;
         const title = isEdit ? 'Edit Workflow' : 'Create Workflow';
         currentSteps = workflow?.steps ? JSON.parse(JSON.stringify(workflow.steps)) : [];
+        currentInputSchema = workflow?.input_schema || null;
         const inputSchemaJson = workflow?.input_schema ? JSON.stringify(workflow.input_schema, null, 2) : '';
 
         return `
@@ -410,6 +416,201 @@ const Workflows = (function() {
         `;
     }
 
+    /**
+     * Get available variables for a step based on input schema and previous steps
+     */
+    function getAvailableVariables() {
+        const variables = {
+            request: [],
+            steps: []
+        };
+
+        // Add request variables from input schema
+        if (currentInputSchema && currentInputSchema.properties) {
+            for (const [name, schema] of Object.entries(currentInputSchema.properties)) {
+                variables.request.push({
+                    name: name,
+                    syntax: `\${request:${name}}`,
+                    type: schema.type || 'string',
+                    description: schema.description || ''
+                });
+            }
+        }
+
+        // Add outputs from previous steps
+        const maxIndex = editingStepIndex !== null ? editingStepIndex : currentSteps.length;
+
+        for (let i = 0; i < maxIndex; i++) {
+            const prevStep = currentSteps[i];
+            const stepVars = getStepOutputVariables(prevStep);
+            variables.steps.push({
+                stepName: prevStep.name,
+                stepType: prevStep.type,
+                outputs: stepVars
+            });
+        }
+
+        return variables;
+    }
+
+    /**
+     * Get output variables for a step based on its type
+     */
+    function getStepOutputVariables(step) {
+        const outputs = [];
+
+        if (step.type === 'chat_completion') {
+            outputs.push(
+                { name: 'content', syntax: `\${step:${step.name}:content}`, description: 'LLM response text' },
+                { name: 'model', syntax: `\${step:${step.name}:model}`, description: 'Model used' },
+                { name: 'finish_reason', syntax: `\${step:${step.name}:finish_reason}`, description: 'Completion finish reason' }
+            );
+        } else if (step.type === 'knowledge_base_search') {
+            outputs.push(
+                { name: 'documents', syntax: `\${step:${step.name}:documents}`, description: 'Array of matching documents' },
+                { name: 'documents_xml', syntax: `\${step:${step.name}:documents_xml}`, description: 'Documents as XML string' },
+                { name: 'total', syntax: `\${step:${step.name}:total}`, description: 'Total number of results' }
+            );
+        } else if (step.type === 'crag_scoring') {
+            outputs.push(
+                { name: 'scored_documents', syntax: `\${step:${step.name}:scored_documents}`, description: 'Documents with relevance scores' },
+                { name: 'relevant_count', syntax: `\${step:${step.name}:relevant_count}`, description: 'Number of relevant documents' }
+            );
+        } else if (step.type === 'http_request') {
+            outputs.push(
+                { name: 'body', syntax: `\${step:${step.name}:body}`, description: 'Response body' },
+                { name: 'extracted', syntax: `\${step:${step.name}:extracted}`, description: 'Extracted data (if extract_path set)' },
+                { name: 'status_code', syntax: `\${step:${step.name}:status_code}`, description: 'HTTP status code' }
+            );
+        } else if (step.type === 'conditional') {
+            outputs.push(
+                { name: 'action', syntax: `\${step:${step.name}:action}`, description: 'Action taken (continue/skip/end)' }
+            );
+        }
+
+        return outputs;
+    }
+
+    /**
+     * Render variable picker button with dropdown
+     */
+    function renderVariablePicker(targetFieldId) {
+        return `
+            <button type="button" class="variable-picker-btn ml-2 px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 rounded border"
+                data-target="${targetFieldId}" title="Insert variable">
+                <span class="font-mono">\${...}</span>
+            </button>
+        `;
+    }
+
+    /**
+     * Render variable picker dropdown content
+     */
+    function renderVariablePickerDropdown(targetFieldId) {
+        const variables = getAvailableVariables();
+        let html = `
+            <div class="variable-picker-dropdown absolute z-50 mt-1 w-80 bg-white border border-gray-300 rounded-lg shadow-lg max-h-64 overflow-y-auto"
+                 data-target="${targetFieldId}">
+                <div class="p-2 border-b bg-gray-50">
+                    <span class="text-xs font-medium text-gray-600">Insert Variable</span>
+                </div>
+        `;
+
+        // Request variables
+        if (variables.request.length > 0) {
+            html += `
+                <div class="p-2 border-b">
+                    <div class="text-xs font-semibold text-blue-600 mb-2">📥 Request Input</div>
+                    <div class="space-y-1">
+            `;
+
+            for (const v of variables.request) {
+                html += `
+                    <button type="button" class="var-insert-btn w-full text-left px-2 py-1 text-xs hover:bg-blue-50 rounded flex items-center justify-between group"
+                        data-syntax="${Utils.escapeHtml(v.syntax)}" data-target="${targetFieldId}">
+                        <span class="font-mono text-blue-700">${Utils.escapeHtml(v.syntax)}</span>
+                        <span class="text-gray-400 text-xs hidden group-hover:inline">${Utils.escapeHtml(v.type)}</span>
+                    </button>
+                `;
+            }
+            html += `</div></div>`;
+        }
+
+        // Step output variables
+        if (variables.steps.length > 0) {
+            html += `<div class="p-2">
+                <div class="text-xs font-semibold text-green-600 mb-2">📤 Step Outputs</div>
+            `;
+
+            for (const stepGroup of variables.steps) {
+                html += `
+                    <div class="mb-2">
+                        <div class="text-xs text-gray-500 mb-1">
+                            <span class="font-medium">${Utils.escapeHtml(stepGroup.stepName)}</span>
+                            <span class="text-gray-400">(${getStepTypeLabel(stepGroup.stepType)})</span>
+                        </div>
+                        <div class="space-y-1 pl-2 border-l-2 border-green-200">
+                `;
+
+                for (const output of stepGroup.outputs) {
+                    html += `
+                        <button type="button" class="var-insert-btn w-full text-left px-2 py-1 text-xs hover:bg-green-50 rounded flex items-center justify-between group"
+                            data-syntax="${Utils.escapeHtml(output.syntax)}" data-target="${targetFieldId}">
+                            <span class="font-mono text-green-700">${Utils.escapeHtml(output.syntax)}</span>
+                            <span class="text-gray-400 text-xs hidden group-hover:inline truncate max-w-24">${Utils.escapeHtml(output.description)}</span>
+                        </button>
+                    `;
+                }
+                html += `</div></div>`;
+            }
+            html += `</div>`;
+        }
+
+        // No variables available
+        if (variables.request.length === 0 && variables.steps.length === 0) {
+            html += `
+                <div class="p-4 text-center text-gray-500 text-xs">
+                    <p>No variables available yet.</p>
+                    <p class="mt-1">Define an input schema or add steps before this one.</p>
+                </div>
+            `;
+        }
+
+        html += `</div>`;
+        return html;
+    }
+
+    /**
+     * Insert variable at cursor position or append to field
+     */
+    function insertVariableIntoField(targetId, variableSyntax) {
+        const $field = $(`#${targetId}, [name="${targetId}"]`);
+
+        if ($field.length === 0) return;
+
+        const field = $field[0];
+        const currentValue = $field.val();
+
+        // For textareas and inputs, try to insert at cursor position
+        if (field.selectionStart !== undefined) {
+            const start = field.selectionStart;
+            const end = field.selectionEnd;
+            const newValue = currentValue.substring(0, start) + variableSyntax + currentValue.substring(end);
+            $field.val(newValue);
+
+            // Move cursor to end of inserted text
+            const newCursorPos = start + variableSyntax.length;
+            field.setSelectionRange(newCursorPos, newCursorPos);
+            $field.focus();
+        } else {
+            // Fallback: append to end
+            $field.val(currentValue + variableSyntax);
+        }
+
+        // Trigger change event for any listeners
+        $field.trigger('input').trigger('change');
+    }
+
     function renderStepModal(stepType, step = null) {
         const isEdit = !!step;
         const title = isEdit ? `Edit ${getStepTypeLabel(stepType)} Step` : `Add ${getStepTypeLabel(stepType)} Step`;
@@ -426,22 +627,40 @@ const Workflows = (function() {
         `;
 
         if (stepType === 'chat_completion') {
+            // Build existing variables JSON for display
+            const existingVarsJson = step?.prompt_variables ? JSON.stringify(step.prompt_variables, null, 2) : '{}';
+
             fieldsHtml += `
                 <div class="mb-4">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Model ID *</label>
-                    <input type="text" name="model_id" value="${Utils.escapeHtml(step?.model_id || '')}"
-                        class="form-input" placeholder="gpt-4" required>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Model *</label>
+                    <select name="model_id" class="form-input model-select" required>
+                        <option value="">Select model...</option>
+                    </select>
                 </div>
                 <div class="mb-4">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">User Message *</label>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Prompt *</label>
+                    <select name="prompt_id" class="form-input prompt-select" required>
+                        <option value="">Select prompt...</option>
+                    </select>
+                    <p class="text-xs text-gray-500 mt-1">Select a prompt template. Variables will be shown below.</p>
+                </div>
+                <div id="prompt-variables-section" class="mb-4 hidden">
+                    <div class="flex items-center justify-between mb-2">
+                        <label class="text-sm font-medium text-gray-700">Prompt Variables</label>
+                        ${renderVariablePicker('prompt_var_target')}
+                    </div>
+                    <div id="prompt-variables-container" class="space-y-3 p-3 bg-gray-50 rounded border">
+                        <!-- Variable inputs will be dynamically inserted here -->
+                    </div>
+                    <p class="text-xs text-gray-500 mt-1">Click a variable input, then use the picker above to insert variables</p>
+                </div>
+                <div class="mb-4">
+                    <div class="flex items-center justify-between mb-1">
+                        <label class="text-sm font-medium text-gray-700">User Message *</label>
+                        ${renderVariablePicker('user_message')}
+                    </div>
                     <textarea name="user_message" rows="3" class="form-input" required
                         placeholder='\${request:question}'>${Utils.escapeHtml(step?.user_message || '')}</textarea>
-                    <p class="text-xs text-gray-500 mt-1">Use \${request:field} or \${step:name:field} for variables</p>
-                </div>
-                <div class="mb-4">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">System Message</label>
-                    <textarea name="system_message" rows="2" class="form-input"
-                        placeholder="You are a helpful assistant...">${Utils.escapeHtml(step?.system_message || '')}</textarea>
                 </div>
                 <div class="grid grid-cols-3 gap-4 mb-4">
                     <div>
@@ -460,6 +679,7 @@ const Workflows = (function() {
                             value="${step?.top_p ?? ''}" class="form-input" placeholder="1.0">
                     </div>
                 </div>
+                <input type="hidden" name="prompt_variables_json" value="${Utils.escapeHtml(existingVarsJson)}">
             `;
         } else if (stepType === 'knowledge_base_search') {
             fieldsHtml += `
@@ -471,7 +691,10 @@ const Workflows = (function() {
                     <p class="text-xs text-gray-500 mt-1">Select the knowledge base to search</p>
                 </div>
                 <div class="mb-4">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Query *</label>
+                    <div class="flex items-center justify-between mb-1">
+                        <label class="text-sm font-medium text-gray-700">Query *</label>
+                        ${renderVariablePicker('query')}
+                    </div>
                     <textarea name="query" rows="2" class="form-input" required
                         placeholder='\${request:question}'>${Utils.escapeHtml(step?.query || '')}</textarea>
                 </div>
@@ -491,13 +714,19 @@ const Workflows = (function() {
         } else if (stepType === 'crag_scoring') {
             fieldsHtml += `
                 <div class="mb-4">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Documents Source *</label>
+                    <div class="flex items-center justify-between mb-1">
+                        <label class="text-sm font-medium text-gray-700">Documents Source *</label>
+                        ${renderVariablePicker('documents_source')}
+                    </div>
                     <input type="text" name="documents_source" value="${Utils.escapeHtml(step?.documents_source || '')}"
                         class="form-input" placeholder='\${step:search:documents}' required>
                 </div>
                 <div class="mb-4">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Query *</label>
-                    <textarea name="query" rows="2" class="form-input" required
+                    <div class="flex items-center justify-between mb-1">
+                        <label class="text-sm font-medium text-gray-700">Query *</label>
+                        ${renderVariablePicker('crag_query')}
+                    </div>
+                    <textarea name="query" id="crag_query" rows="2" class="form-input" required
                         placeholder='\${request:question}'>${Utils.escapeHtml(step?.query || '')}</textarea>
                 </div>
                 <div class="grid grid-cols-2 gap-4 mb-4">
@@ -517,7 +746,10 @@ const Workflows = (function() {
             const conditionsJson = step?.conditions ? JSON.stringify(step.conditions, null, 2) : '[]';
             fieldsHtml += `
                 <div class="mb-4">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Conditions (JSON) *</label>
+                    <div class="flex items-center justify-between mb-1">
+                        <label class="text-sm font-medium text-gray-700">Conditions (JSON) *</label>
+                        ${renderVariablePicker('conditions')}
+                    </div>
                     <textarea name="conditions" rows="6" class="form-input font-mono text-sm" required
                         placeholder='[{"field": "\${step:search:documents}", "operator": "is_empty", "action": {"end_workflow": {"error": "No results"}}}]'>${Utils.escapeHtml(conditionsJson)}</textarea>
                     <p class="text-xs text-gray-500 mt-1">Operators: equals, not_equals, contains, is_empty, is_not_empty, greater_than, less_than</p>
@@ -549,10 +781,13 @@ const Workflows = (function() {
                     <p class="text-xs text-gray-500 mt-1">Optional HTTP API Key credential for authentication header</p>
                 </div>
                 <div class="mb-4">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">URI Path</label>
+                    <div class="flex items-center justify-between mb-1">
+                        <label class="text-sm font-medium text-gray-700">URI Path</label>
+                        ${renderVariablePicker('path')}
+                    </div>
                     <input type="text" name="path" value="${Utils.escapeHtml(step?.path || '')}"
-                        class="form-input" placeholder="/api/users/\${input:user_id}">
-                    <p class="text-xs text-gray-500 mt-1">Path to append to the External API's base URL. Supports variable references.</p>
+                        class="form-input" placeholder="/api/users/\${request:user_id}">
+                    <p class="text-xs text-gray-500 mt-1">Path to append to the External API's base URL</p>
                 </div>
                 <div class="grid grid-cols-2 gap-4 mb-4">
                     <div>
@@ -572,15 +807,21 @@ const Workflows = (function() {
                     </div>
                 </div>
                 <div class="mb-4">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Additional Headers (JSON)</label>
+                    <div class="flex items-center justify-between mb-1">
+                        <label class="text-sm font-medium text-gray-700">Additional Headers (JSON)</label>
+                        ${renderVariablePicker('headers')}
+                    </div>
                     <textarea name="headers" rows="3" class="form-input font-mono text-sm"
                         placeholder='{"X-Custom-Header": "\${request:custom}"}'>${Utils.escapeHtml(headersJson)}</textarea>
                     <p class="text-xs text-gray-500 mt-1">Extra headers beyond those in the credential</p>
                 </div>
                 <div class="mb-4">
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Body (JSON)</label>
-                    <textarea name="body" rows="4" class="form-input font-mono text-sm"
-                        placeholder='{"query": "\${input:query}"}'>${Utils.escapeHtml(bodyJson)}</textarea>
+                    <div class="flex items-center justify-between mb-1">
+                        <label class="text-sm font-medium text-gray-700">Body (JSON)</label>
+                        ${renderVariablePicker('http_body')}
+                    </div>
+                    <textarea name="body" id="http_body" rows="4" class="form-input font-mono text-sm"
+                        placeholder='{"query": "\${request:query}"}'>${Utils.escapeHtml(bodyJson)}</textarea>
                     <p class="text-xs text-gray-500 mt-1">Leave empty for GET requests</p>
                 </div>
                 <div class="mb-4">
@@ -603,9 +844,8 @@ const Workflows = (function() {
             <div class="mb-4">
                 <label class="block text-sm font-medium text-gray-700 mb-1">On Error</label>
                 <select name="on_error" class="form-input">
-                    <option value="fail" ${step?.on_error === 'fail' ? 'selected' : ''}>Fail Workflow</option>
-                    <option value="continue" ${step?.on_error === 'continue' ? 'selected' : ''}>Continue</option>
-                    <option value="skip" ${step?.on_error === 'skip' ? 'selected' : ''}>Skip Step</option>
+                    <option value="fail_workflow" ${!step?.on_error || step?.on_error === 'fail_workflow' ? 'selected' : ''}>Fail Workflow</option>
+                    <option value="skip_step" ${step?.on_error === 'skip_step' ? 'selected' : ''}>Skip Step</option>
                 </select>
             </div>
         `;
@@ -941,6 +1181,21 @@ const Workflows = (function() {
     function bindFormEvents(editId) {
         $('#back-btn, #cancel-btn').on('click', () => render());
 
+        // Track input schema changes for variable picker
+        $('[name="input_schema"]').on('change blur', function() {
+            const schemaStr = $(this).val().trim();
+
+            if (schemaStr) {
+                try {
+                    currentInputSchema = JSON.parse(schemaStr);
+                } catch (e) {
+                    // Invalid JSON, keep previous schema
+                }
+            } else {
+                currentInputSchema = null;
+            }
+        });
+
         // Tab switching
         $('.view-tab').on('click', function() {
             const view = $(this).data('view');
@@ -1031,6 +1286,14 @@ const Workflows = (function() {
         $('#step-modal').removeClass('hidden');
         bindStepModalEvents(stepType);
 
+        // Load Models and Prompts for Chat Completion steps
+        if (stepType === 'chat_completion') {
+            await Promise.all([
+                loadModels(step?.model_id),
+                loadPrompts(step?.prompt_id, step?.prompt_variables)
+            ]);
+        }
+
         // Load External APIs and HTTP API Key credentials for HTTP Request steps
         if (stepType === 'http_request') {
             await Promise.all([
@@ -1119,10 +1382,173 @@ const Workflows = (function() {
         }
     }
 
+    async function loadModels(selectedId = null) {
+        const $select = $('.model-select');
+        $select.html('<option value="">Loading models...</option>');
+
+        try {
+            const data = await API.listModels();
+            const models = (data.models || []).filter(m => m.enabled !== false);
+
+            let options = '<option value="">Select model...</option>';
+
+            for (const model of models) {
+                const selected = model.id === selectedId ? 'selected' : '';
+                const provider = model.config?.provider || 'unknown';
+                options += `<option value="${Utils.escapeHtml(model.id)}" ${selected}>${Utils.escapeHtml(model.name)} (${Utils.escapeHtml(provider)})</option>`;
+            }
+
+            if (models.length === 0) {
+                options = '<option value="">No models found</option>';
+            }
+
+            $select.html(options);
+        } catch (error) {
+            $select.html('<option value="">Failed to load models</option>');
+            console.error('Failed to load models:', error);
+        }
+    }
+
+    // Store prompts data for variable extraction
+    let cachedPrompts = [];
+
+    async function loadPrompts(selectedId = null, existingVariables = null) {
+        const $select = $('.prompt-select');
+        $select.html('<option value="">Loading prompts...</option>');
+
+        try {
+            const data = await API.listPrompts();
+            cachedPrompts = (data.prompts || []).filter(p => p.enabled !== false);
+
+            let options = '<option value="">Select prompt...</option>';
+
+            for (const prompt of cachedPrompts) {
+                const selected = prompt.id === selectedId ? 'selected' : '';
+                options += `<option value="${Utils.escapeHtml(prompt.id)}" ${selected}>${Utils.escapeHtml(prompt.name)}</option>`;
+            }
+
+            if (cachedPrompts.length === 0) {
+                options = '<option value="">No prompts found</option>';
+            }
+
+            $select.html(options);
+
+            // If a prompt was pre-selected, load its variables
+            if (selectedId) {
+                await handlePromptSelection(selectedId, existingVariables);
+            }
+        } catch (error) {
+            $select.html('<option value="">Failed to load prompts</option>');
+            console.error('Failed to load prompts:', error);
+        }
+    }
+
+    function extractPromptVariables(content) {
+        // Match ${var:variable-name} or ${var:variable-name:default-value}
+        const regex = /\$\{var:([a-zA-Z_][a-zA-Z0-9_-]*?)(?::([^}]*))?\}/g;
+        const variables = [];
+        let match;
+
+        while ((match = regex.exec(content)) !== null) {
+            const varName = match[1];
+            const defaultValue = match[2] || '';
+
+            // Avoid duplicates
+            if (!variables.find(v => v.name === varName)) {
+                variables.push({ name: varName, defaultValue: defaultValue });
+            }
+        }
+
+        return variables;
+    }
+
+    async function handlePromptSelection(promptId, existingVariables = null) {
+        const $section = $('#prompt-variables-section');
+        const $container = $('#prompt-variables-container');
+
+        if (!promptId) {
+            $section.addClass('hidden');
+            $container.html('');
+            return;
+        }
+
+        // Try to find prompt in cache, otherwise fetch it
+        let prompt = cachedPrompts.find(p => p.id === promptId);
+
+        if (!prompt) {
+            try {
+                prompt = await API.getPrompt(promptId);
+            } catch (error) {
+                console.error('Failed to load prompt:', error);
+                $section.addClass('hidden');
+                return;
+            }
+        }
+
+        const variables = extractPromptVariables(prompt.content || '');
+
+        if (variables.length === 0) {
+            $section.addClass('hidden');
+            $container.html('<p class="text-sm text-gray-500 italic">This prompt has no variables.</p>');
+            return;
+        }
+
+        // Parse existing variables if provided
+        let existingVarsMap = {};
+
+        if (existingVariables && typeof existingVariables === 'object') {
+            existingVarsMap = existingVariables;
+        }
+
+        // Render variable inputs
+        let html = '';
+
+        for (const variable of variables) {
+            const existingValue = existingVarsMap[variable.name] || variable.defaultValue || '';
+            html += `
+                <div class="flex items-center gap-2">
+                    <label class="w-32 text-sm font-medium text-gray-600 shrink-0">\${var:${Utils.escapeHtml(variable.name)}}</label>
+                    <input type="text" name="prompt_var_${Utils.escapeHtml(variable.name)}"
+                        value="${Utils.escapeHtml(existingValue)}"
+                        class="form-input flex-1 text-sm"
+                        placeholder="\${request:field} or \${step:name:field}">
+                </div>
+            `;
+        }
+
+        $container.html(html);
+        $section.removeClass('hidden');
+
+        // Update hidden field with variable names for form processing
+        updatePromptVariablesJson();
+    }
+
+    function updatePromptVariablesJson() {
+        const variables = {};
+        $('[name^="prompt_var_"]').each(function() {
+            const name = $(this).attr('name').replace('prompt_var_', '');
+            const value = $(this).val().trim();
+
+            if (value) {
+                variables[name] = value;
+            }
+        });
+        $('[name="prompt_variables_json"]').val(JSON.stringify(variables));
+    }
+
     function hideStepModal() {
         $('#step-modal').addClass('hidden');
         editingStepIndex = null;
+        lastFocusedPromptVar = null;
+        // Clean up event listeners
+        $(document).off('click.varPicker');
+        $(document).off('focus', '[name^="prompt_var_"]');
+        $(document).off('input', '[name^="prompt_var_"]');
+        $('.variable-picker-dropdown').remove();
     }
+
+    // Track currently focused field for prompt variable picker
+    let lastFocusedPromptVar = null;
 
     function bindStepModalEvents(stepType) {
         $('#modal-cancel-btn').on('click', hideStepModal);
@@ -1130,6 +1556,65 @@ const Workflows = (function() {
         $('#step-modal').on('click', function(e) {
             if (e.target === this) hideStepModal();
         });
+
+        // Handle variable picker button clicks
+        $('.variable-picker-btn').on('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+
+            const targetId = $(this).data('target');
+            const $btn = $(this);
+
+            // Close any existing dropdowns
+            $('.variable-picker-dropdown').remove();
+
+            // For prompt_var_target, use the last focused prompt variable input
+            let actualTargetId = targetId;
+
+            if (targetId === 'prompt_var_target' && lastFocusedPromptVar) {
+                actualTargetId = lastFocusedPromptVar;
+            }
+
+            // Create and position the dropdown
+            const dropdown = renderVariablePickerDropdown(actualTargetId);
+            $btn.parent().css('position', 'relative').append(dropdown);
+
+            // Bind insert handlers
+            $('.var-insert-btn').on('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+
+                const syntax = $(this).data('syntax');
+                const targetField = $(this).data('target');
+                insertVariableIntoField(targetField, syntax);
+                $('.variable-picker-dropdown').remove();
+            });
+        });
+
+        // Close dropdown when clicking outside
+        $(document).on('click.varPicker', function(e) {
+            if (!$(e.target).closest('.variable-picker-dropdown, .variable-picker-btn').length) {
+                $('.variable-picker-dropdown').remove();
+            }
+        });
+
+        // Track focus on prompt variable inputs for the dynamic picker
+        $(document).on('focus', '[name^="prompt_var_"]', function() {
+            lastFocusedPromptVar = $(this).attr('name');
+        });
+
+        // Handle prompt selection change for chat_completion
+        if (stepType === 'chat_completion') {
+            $('.prompt-select').on('change', async function() {
+                const promptId = $(this).val();
+                await handlePromptSelection(promptId);
+            });
+
+            // Update hidden JSON field when variable inputs change
+            $(document).on('input', '[name^="prompt_var_"]', function() {
+                updatePromptVariablesJson();
+            });
+        }
 
         $('#step-form').on('submit', function(e) {
             e.preventDefault();
@@ -1169,11 +1654,20 @@ const Workflows = (function() {
 
         if (stepType === 'chat_completion') {
             step.model_id = $('[name="model_id"]').val().trim();
+            step.prompt_id = $('[name="prompt_id"]').val().trim();
             step.user_message = $('[name="user_message"]').val();
 
-            const systemMessage = $('[name="system_message"]').val().trim();
+            // Parse prompt variables from the hidden JSON field
+            try {
+                const varsJson = $('[name="prompt_variables_json"]').val();
+                const vars = JSON.parse(varsJson || '{}');
 
-            if (systemMessage) step.system_message = systemMessage;
+                if (Object.keys(vars).length > 0) {
+                    step.prompt_variables = vars;
+                }
+            } catch (e) {
+                console.error('Failed to parse prompt variables:', e);
+            }
 
             const temp = parseFloat($('[name="temperature"]').val());
 

@@ -382,15 +382,13 @@ impl ExecutionLogService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{AppConfiguration, ExecutionLog};
-    use crate::infrastructure::config::{StorageConfigRepository, StorageExecutionLogRepository};
+    use crate::domain::{ExecutionLog, ConfigValue};
+    use crate::infrastructure::config::{InMemoryConfigRepository, StorageExecutionLogRepository};
     use crate::infrastructure::storage::InMemoryStorage;
-    use crate::domain::ConfigValue;
 
     fn create_service() -> (ExecutionLogService, Arc<dyn ConfigRepository>) {
-        let config_storage = Arc::new(InMemoryStorage::<AppConfiguration>::new());
         let config_repo: Arc<dyn ConfigRepository> =
-            Arc::new(StorageConfigRepository::new(config_storage));
+            Arc::new(InMemoryConfigRepository::with_defaults());
 
         let log_storage = Arc::new(InMemoryStorage::<ExecutionLog>::new());
         let log_repo: Arc<dyn ExecutionLogRepository> =

@@ -4,7 +4,6 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -12,7 +11,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::api::middleware::RequireApiKey;
 use crate::api::state::AppState;
-use crate::api::types::{ApiError, AsyncOperationCreated, AsyncQueryParams};
+use crate::api::types::{ApiError, AsyncOperationCreated, AsyncQueryParams, Json};
 use crate::domain::workflow::StepExecutionResult;
 use crate::domain::OperationType;
 
@@ -409,11 +408,15 @@ mod tests {
     fn test_step_execution_summary_from() {
         let result = StepExecutionResult {
             step_name: "test_step".to_string(),
+            step_type: "chat_completion".to_string(),
             success: true,
+            input: Some(json!({"user_message": "Hello"})),
             output: Some(json!({"data": "test"})),
             execution_time_ms: 75,
             skipped: false,
             error: None,
+            token_usage: None,
+            cost_micros: None,
         };
 
         let summary = StepExecutionSummary::from(&result);
@@ -428,11 +431,15 @@ mod tests {
     fn test_step_execution_summary_from_skipped() {
         let result = StepExecutionResult {
             step_name: "skipped_step".to_string(),
+            step_type: "chat_completion".to_string(),
             success: true,
+            input: None,
             output: None,
             execution_time_ms: 0,
             skipped: true,
             error: None,
+            token_usage: None,
+            cost_micros: None,
         };
 
         let summary = StepExecutionSummary::from(&result);
@@ -443,11 +450,15 @@ mod tests {
     fn test_step_execution_summary_from_failed() {
         let result = StepExecutionResult {
             step_name: "failed_step".to_string(),
+            step_type: "chat_completion".to_string(),
             success: false,
+            input: None,
             output: None,
             execution_time_ms: 100,
             skipped: false,
             error: Some("Error occurred".to_string()),
+            token_usage: None,
+            cost_micros: None,
         };
 
         let summary = StepExecutionSummary::from(&result);

@@ -1,14 +1,11 @@
 //! Configuration management admin endpoints
 
-use axum::{
-    extract::{Path, State},
-    Json,
-};
+use axum::extract::{Path, State};
 use serde::{Deserialize, Serialize};
 
 use crate::api::middleware::RequireAdmin;
 use crate::api::state::AppState;
-use crate::api::types::ApiError;
+use crate::api::types::{ApiError, Json};
 use crate::domain::{ConfigCategory, ConfigValue};
 
 /// Configuration entry response
@@ -102,7 +99,7 @@ pub async fn list_config(
             key: entry.key().to_string(),
             value: ConfigValueResponse::from(entry.value()),
             category: entry.category().to_string(),
-            description: entry.description().map(|s| s.to_string()),
+            description: Some(entry.description().to_string()),
             updated_at: entry.updated_at().to_rfc3339(),
         })
         .collect();
@@ -139,7 +136,7 @@ pub async fn list_config_by_category(
             key: entry.key().to_string(),
             value: ConfigValueResponse::from(entry.value()),
             category: entry.category().to_string(),
-            description: entry.description().map(|s| s.to_string()),
+            description: Some(entry.description().to_string()),
             updated_at: entry.updated_at().to_rfc3339(),
         })
         .collect();
@@ -163,7 +160,7 @@ pub async fn get_config(
         key: entry.key().to_string(),
         value: ConfigValueResponse::from(entry.value()),
         category: entry.category().to_string(),
-        description: entry.description().map(|s| s.to_string()),
+        description: Some(entry.description().to_string()),
         updated_at: entry.updated_at().to_rfc3339(),
     }))
 }
@@ -188,32 +185,9 @@ pub async fn update_config(
         key: entry.key().to_string(),
         value: ConfigValueResponse::from(entry.value()),
         category: entry.category().to_string(),
-        description: entry.description().map(|s| s.to_string()),
+        description: Some(entry.description().to_string()),
         updated_at: entry.updated_at().to_rfc3339(),
     }))
-}
-
-/// Reset configuration to defaults
-pub async fn reset_config(
-    _admin: RequireAdmin,
-    State(state): State<AppState>,
-) -> Result<Json<ListConfigResponse>, ApiError> {
-    state.config_service.reset().await?;
-
-    let entries = state.config_service.list().await?;
-
-    let config = entries
-        .into_iter()
-        .map(|entry| ConfigEntryResponse {
-            key: entry.key().to_string(),
-            value: ConfigValueResponse::from(entry.value()),
-            category: entry.category().to_string(),
-            description: entry.description().map(|s| s.to_string()),
-            updated_at: entry.updated_at().to_rfc3339(),
-        })
-        .collect();
-
-    Ok(Json(ListConfigResponse { config }))
 }
 
 #[cfg(test)]

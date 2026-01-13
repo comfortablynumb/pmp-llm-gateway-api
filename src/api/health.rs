@@ -2,7 +2,9 @@
 
 use std::time::Instant;
 
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use axum::{extract::State, http::StatusCode, response::IntoResponse};
+
+use crate::api::types::Json;
 use serde::Serialize;
 
 use super::state::AppState;

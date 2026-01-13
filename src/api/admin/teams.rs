@@ -1,15 +1,12 @@
 //! Team management admin endpoints
 
-use axum::{
-    extract::{Path, State},
-    Json,
-};
+use axum::extract::{Path, State};
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
 use crate::api::middleware::RequireAdmin;
 use crate::api::state::AppState;
-use crate::api::types::ApiError;
+use crate::api::types::{ApiError, Json};
 use crate::domain::team::{Team, TeamStatus};
 use crate::infrastructure::team::{CreateTeamRequest, UpdateTeamRequest};
 
