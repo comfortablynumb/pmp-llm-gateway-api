@@ -54,10 +54,18 @@ impl KnowledgeBaseProvider for InMemoryKnowledgeBaseProvider {
         let docs = self.documents.read().await;
         let query_lower = params.query.to_lowercase();
 
-        // Simple text-based search (substring matching)
+        // Simple text-based search (substring matching) with optional metadata filtering
         let results: Vec<SearchResult> = docs
             .iter()
             .filter(|doc| doc.content.to_lowercase().contains(&query_lower))
+            .filter(|doc| {
+                // Apply metadata filter if provided
+                params
+                    .filter
+                    .as_ref()
+                    .map(|f| matches_filter(doc, f))
+                    .unwrap_or(true)
+            })
             .take(params.top_k as usize)
             .map(|doc| {
                 let mut result = SearchResult::new(&doc.id, &doc.content, 0.8);
@@ -456,5 +464,89 @@ mod tests {
         let provider = InMemoryKnowledgeBaseProvider::new(id);
 
         assert!(provider.health_check().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_search_with_metadata_filter() {
+        let id = KnowledgeBaseId::new("test-kb").unwrap();
+        let provider = InMemoryKnowledgeBaseProvider::new(id);
+
+        // Add documents with metadata
+        let docs = vec![
+            Document::new("doc1", "Rust programming guide")
+                .with_metadata("category", serde_json::json!("programming")),
+            Document::new("doc2", "Rust cookbook recipes")
+                .with_metadata("category", serde_json::json!("programming")),
+            Document::new("doc3", "Rust game development")
+                .with_metadata("category", serde_json::json!("gaming")),
+        ];
+
+        provider.add_documents(docs).await.unwrap();
+
+        // Search without filter - should return all 3 docs matching "Rust"
+        let params = SearchParams::new("Rust");
+        let results = provider.search(params).await.unwrap();
+        assert_eq!(results.len(), 3);
+
+        // Search with filter - should only return docs with category = "programming"
+        use crate::domain::knowledge_base::FilterBuilder;
+
+        let filter = FilterBuilder::new()
+            .eq("category", "programming")
+            .build()
+            .expect("filter should be present");
+
+        let params = SearchParams::new("Rust").with_filter(filter);
+        let results = provider.search(params).await.unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| {
+            r.metadata
+                .get("category")
+                .and_then(|v| v.as_str())
+                .map(|s| s == "programming")
+                .unwrap_or(false)
+        }));
+    }
+
+    #[tokio::test]
+    async fn test_search_with_complex_filter() {
+        let id = KnowledgeBaseId::new("test-kb").unwrap();
+        let provider = InMemoryKnowledgeBaseProvider::new(id);
+
+        // Add documents with metadata
+        let docs = vec![
+            Document::new("doc1", "Rust basics")
+                .with_metadata("level", serde_json::json!(1))
+                .with_metadata("author", serde_json::json!("Alice")),
+            Document::new("doc2", "Rust advanced")
+                .with_metadata("level", serde_json::json!(3))
+                .with_metadata("author", serde_json::json!("Bob")),
+            Document::new("doc3", "Rust intermediate")
+                .with_metadata("level", serde_json::json!(2))
+                .with_metadata("author", serde_json::json!("Alice")),
+        ];
+
+        provider.add_documents(docs).await.unwrap();
+
+        // Filter for level >= 2
+        use crate::domain::knowledge_base::FilterBuilder;
+
+        let filter = FilterBuilder::new()
+            .gte("level", 2)
+            .build()
+            .expect("filter should be present");
+
+        let params = SearchParams::new("Rust").with_filter(filter);
+        let results = provider.search(params).await.unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| {
+            r.metadata
+                .get("level")
+                .and_then(|v| v.as_i64())
+                .map(|l| l >= 2)
+                .unwrap_or(false)
+        }));
     }
 }

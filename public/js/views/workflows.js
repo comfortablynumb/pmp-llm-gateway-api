@@ -8,6 +8,211 @@ const Workflows = (function() {
     // Current workflow input schema for variable picker
     let currentInputSchema = null;
 
+    // Filter operators for metadata filtering
+    const FILTER_OPERATORS = [
+        { value: 'eq', label: 'equals' },
+        { value: 'ne', label: 'not equals' },
+        { value: 'gt', label: '>' },
+        { value: 'gte', label: '>=' },
+        { value: 'lt', label: '<' },
+        { value: 'lte', label: '<=' },
+        { value: 'contains', label: 'contains' },
+        { value: 'starts_with', label: 'starts with' },
+        { value: 'ends_with', label: 'ends with' },
+        { value: 'in', label: 'in list' },
+        { value: 'not_in', label: 'not in list' },
+        { value: 'exists', label: 'exists' },
+        { value: 'not_exists', label: 'not exists' }
+    ];
+
+    // Operators that don't require a value
+    const NO_VALUE_OPERATORS = ['exists', 'not_exists'];
+
+    /**
+     * Render filter operator options
+     */
+    function renderFilterOperatorOptions(selected = 'eq') {
+        return FILTER_OPERATORS.map(op =>
+            `<option value="${op.value}" ${op.value === selected ? 'selected' : ''}>${Utils.escapeHtml(op.label)}</option>`
+        ).join('');
+    }
+
+    /**
+     * Render a single filter row
+     */
+    function renderFilterRow(index, condition = {}) {
+        const key = condition.key || '';
+        const operator = condition.operator || 'eq';
+        const value = condition.value !== undefined ? String(condition.value) : '';
+        const hideValue = NO_VALUE_OPERATORS.includes(operator);
+
+        return `
+            <div class="filter-row flex items-center gap-2" data-index="${index}">
+                <input type="text" class="filter-key form-input text-sm w-28"
+                    placeholder="field" value="${Utils.escapeHtml(key)}">
+                <select class="filter-operator form-input text-sm w-28">
+                    ${renderFilterOperatorOptions(operator)}
+                </select>
+                <input type="text" class="filter-value form-input text-sm flex-1"
+                    placeholder="value" value="${Utils.escapeHtml(value)}"
+                    ${hideValue ? 'style="display:none"' : ''}>
+                <button type="button" class="remove-filter-row text-red-500 hover:text-red-700 p-1" title="Remove filter">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                    </svg>
+                </button>
+            </div>
+        `;
+    }
+
+    /**
+     * Render the filter builder container
+     */
+    function renderFilterBuilder(filter) {
+        const connector = filter?.connector || 'and';
+        const filters = filter?.filters || [];
+
+        let rowsHtml = '';
+
+        if (filters.length > 0) {
+            filters.forEach((f, i) => {
+                // Only handle simple conditions for now (not nested groups)
+                if (f.key !== undefined) {
+                    rowsHtml += renderFilterRow(i, f);
+                }
+            });
+        }
+
+        return `
+            <div class="flex items-center gap-2 mb-2">
+                <span class="text-xs text-gray-500">Match</span>
+                <select class="filter-connector form-input text-sm w-20">
+                    <option value="and" ${connector === 'and' ? 'selected' : ''}>ALL</option>
+                    <option value="or" ${connector === 'or' ? 'selected' : ''}>ANY</option>
+                </select>
+                <span class="text-xs text-gray-500">of the following:</span>
+            </div>
+            <div id="filter-rows-container" class="space-y-2">
+                ${rowsHtml || '<p class="text-xs text-gray-400 italic">No filters. Click "+ Add Filter" to add one.</p>'}
+            </div>
+        `;
+    }
+
+    /**
+     * Parse filter value with type detection
+     */
+    function parseFilterValue(valueStr, operator) {
+        if (NO_VALUE_OPERATORS.includes(operator)) {
+            return undefined;
+        }
+
+        const trimmed = valueStr.trim();
+
+        // Handle 'in' and 'not_in' operators - expect comma-separated list
+        if (operator === 'in' || operator === 'not_in') {
+            // Try JSON array first
+            if (trimmed.startsWith('[')) {
+                try {
+                    return JSON.parse(trimmed);
+                } catch (e) {
+                    // Fall through to comma-separated
+                }
+            }
+            // Split by comma
+            return trimmed.split(',').map(v => parseSimpleValue(v.trim()));
+        }
+
+        return parseSimpleValue(trimmed);
+    }
+
+    /**
+     * Parse a simple value with type detection
+     */
+    function parseSimpleValue(valueStr) {
+        if (valueStr === 'true') return true;
+        if (valueStr === 'false') return false;
+        if (valueStr === 'null') return null;
+
+        // Check if it's a number
+        if (valueStr !== '' && !isNaN(valueStr)) {
+            return Number(valueStr);
+        }
+
+        return valueStr;
+    }
+
+    /**
+     * Build filter JSON from UI state
+     */
+    function buildFilterFromUI() {
+        const connector = $('.filter-connector').val() || 'and';
+        const filters = [];
+
+        $('.filter-row').each(function() {
+            const key = $(this).find('.filter-key').val().trim();
+            const operator = $(this).find('.filter-operator').val();
+            const valueStr = $(this).find('.filter-value').val();
+
+            if (key) {
+                const condition = { key, operator };
+                const value = parseFilterValue(valueStr, operator);
+
+                if (value !== undefined) {
+                    condition.value = value;
+                }
+
+                filters.push(condition);
+            }
+        });
+
+        if (filters.length === 0) {
+            return null;
+        }
+
+        return { connector, filters };
+    }
+
+    /**
+     * Add a new filter row
+     */
+    function addFilterRow() {
+        const container = $('#filter-rows-container');
+
+        // Remove "no filters" message if present
+        container.find('p.italic').remove();
+
+        const index = container.find('.filter-row').length;
+        container.append(renderFilterRow(index));
+        bindFilterRowEvents();
+    }
+
+    /**
+     * Bind events for filter rows
+     */
+    function bindFilterRowEvents() {
+        // Remove row
+        $('.remove-filter-row').off('click').on('click', function() {
+            $(this).closest('.filter-row').remove();
+
+            // Show "no filters" message if empty
+            if ($('.filter-row').length === 0) {
+                $('#filter-rows-container').html('<p class="text-xs text-gray-400 italic">No filters. Click "+ Add Filter" to add one.</p>');
+            }
+        });
+
+        // Toggle value field visibility based on operator
+        $('.filter-operator').off('change').on('change', function() {
+            const operator = $(this).val();
+            const $valueInput = $(this).closest('.filter-row').find('.filter-value');
+
+            if (NO_VALUE_OPERATORS.includes(operator)) {
+                $valueInput.hide().val('');
+            } else {
+                $valueInput.show();
+            }
+        });
+    }
+
     async function render() {
         $('#content').html(Utils.renderLoading());
 
@@ -293,9 +498,15 @@ const Workflows = (function() {
                 <div class="text-xs opacity-75">Prompt: ${Utils.escapeHtml(step.prompt_id || 'N/A')}</div>
             `;
         } else if (step.type === 'knowledge_base_search') {
-            details = `<div class="text-xs mt-1 opacity-75">KB: ${Utils.escapeHtml(step.knowledge_base_id || 'N/A')}</div>`;
+            const filterCount = step.filter?.filters?.length || 0;
+            const filterInfo = filterCount > 0 ? ` (${filterCount} filter${filterCount > 1 ? 's' : ''})` : '';
+            details = `<div class="text-xs mt-1 opacity-75">KB: ${Utils.escapeHtml(step.knowledge_base_id || 'N/A')}${filterInfo}</div>`;
         } else if (step.type === 'crag_scoring') {
-            details = `<div class="text-xs mt-1 opacity-75">Threshold: ${step.threshold || 'N/A'}</div>`;
+            details = `
+                <div class="text-xs mt-1 opacity-75">Model: ${Utils.escapeHtml(step.model_id || 'N/A')}</div>
+                <div class="text-xs opacity-75">Prompt: ${Utils.escapeHtml(step.prompt_id || 'N/A')}</div>
+                <div class="text-xs opacity-75">Threshold: ${step.threshold ?? 'N/A'}</div>
+            `;
         } else if (step.type === 'conditional') {
             details = renderConditionsList(step.conditions);
         } else if (step.type === 'http_request') {
@@ -682,6 +893,8 @@ const Workflows = (function() {
                 <input type="hidden" name="prompt_variables_json" value="${Utils.escapeHtml(existingVarsJson)}">
             `;
         } else if (stepType === 'knowledge_base_search') {
+            const existingFilter = step?.filter || null;
+
             fieldsHtml += `
                 <div class="mb-4">
                     <label class="block text-sm font-medium text-gray-700 mb-1">Knowledge Base *</label>
@@ -710,9 +923,46 @@ const Workflows = (function() {
                             value="${step?.min_score ?? ''}" class="form-input" placeholder="0.5">
                     </div>
                 </div>
+                <div class="mb-4">
+                    <div class="flex items-center justify-between mb-2">
+                        <label class="text-sm font-medium text-gray-700">Metadata Filters</label>
+                        <button type="button" class="add-filter-row-btn text-xs text-blue-600 hover:text-blue-800">+ Add Filter</button>
+                    </div>
+                    <div id="filter-builder-container" class="p-3 bg-gray-50 rounded border">
+                        ${renderFilterBuilder(existingFilter)}
+                    </div>
+                    <p class="text-xs text-gray-500 mt-1">Filter documents by metadata fields. For "in list", use comma-separated values.</p>
+                </div>
             `;
         } else if (stepType === 'crag_scoring') {
+            // Build existing variables JSON for display
+            const existingCragVarsJson = step?.prompt_variables ? JSON.stringify(step.prompt_variables, null, 2) : '{}';
+
             fieldsHtml += `
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Model *</label>
+                    <select name="model_id" class="form-input crag-model-select" required>
+                        <option value="">Select model...</option>
+                    </select>
+                    <p class="text-xs text-gray-500 mt-1">Model used for scoring document relevance</p>
+                </div>
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Prompt *</label>
+                    <select name="prompt_id" class="form-input crag-prompt-select" required>
+                        <option value="">Select prompt...</option>
+                    </select>
+                    <p class="text-xs text-gray-500 mt-1">Prompt template for relevance scoring</p>
+                </div>
+                <div id="crag-prompt-variables-section" class="mb-4 hidden">
+                    <div class="flex items-center justify-between mb-2">
+                        <label class="text-sm font-medium text-gray-700">Prompt Variables</label>
+                        ${renderVariablePicker('crag_prompt_var_target')}
+                    </div>
+                    <div id="crag-prompt-variables-container" class="space-y-3 p-3 bg-gray-50 rounded border">
+                        <!-- Variable inputs will be dynamically inserted here -->
+                    </div>
+                    <p class="text-xs text-gray-500 mt-1">Click a variable input, then use the picker above to insert variables</p>
+                </div>
                 <div class="mb-4">
                     <div class="flex items-center justify-between mb-1">
                         <label class="text-sm font-medium text-gray-700">Documents Source *</label>
@@ -720,6 +970,7 @@ const Workflows = (function() {
                     </div>
                     <input type="text" name="documents_source" value="${Utils.escapeHtml(step?.documents_source || '')}"
                         class="form-input" placeholder='\${step:search:documents}' required>
+                    <p class="text-xs text-gray-500 mt-1">Reference to documents from a previous KB Search step</p>
                 </div>
                 <div class="mb-4">
                     <div class="flex items-center justify-between mb-1">
@@ -729,18 +980,13 @@ const Workflows = (function() {
                     <textarea name="query" id="crag_query" rows="2" class="form-input" required
                         placeholder='\${request:question}'>${Utils.escapeHtml(step?.query || '')}</textarea>
                 </div>
-                <div class="grid grid-cols-2 gap-4 mb-4">
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Threshold</label>
-                        <input type="number" name="threshold" step="0.01" min="0" max="1"
-                            value="${step?.threshold ?? 0.5}" class="form-input">
-                    </div>
-                    <div>
-                        <label class="block text-sm font-medium text-gray-700 mb-1">Scoring Model</label>
-                        <input type="text" name="scoring_model" value="${Utils.escapeHtml(step?.scoring_model || '')}"
-                            class="form-input" placeholder="gpt-4">
-                    </div>
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Threshold</label>
+                    <input type="number" name="threshold" step="0.01" min="0" max="1"
+                        value="${step?.threshold ?? 0.5}" class="form-input">
+                    <p class="text-xs text-gray-500 mt-1">Minimum relevance score (0-1) for a document to be considered relevant</p>
                 </div>
+                <input type="hidden" name="crag_prompt_variables_json" value="${Utils.escapeHtml(existingCragVarsJson)}">
             `;
         } else if (stepType === 'conditional') {
             const conditionsJson = step?.conditions ? JSON.stringify(step.conditions, null, 2) : '[]';
@@ -1306,6 +1552,14 @@ const Workflows = (function() {
         if (stepType === 'knowledge_base_search') {
             await loadKnowledgeBases(step?.knowledge_base_id);
         }
+
+        // Load Models and Prompts for CRAG Scoring steps
+        if (stepType === 'crag_scoring') {
+            await Promise.all([
+                loadCragModels(step?.model_id),
+                loadCragPrompts(step?.prompt_id, step?.prompt_variables)
+            ]);
+        }
     }
 
     async function loadExternalApis(selectedId = null) {
@@ -1443,6 +1697,138 @@ const Workflows = (function() {
         }
     }
 
+    async function loadCragModels(selectedId = null) {
+        const $select = $('.crag-model-select');
+        $select.html('<option value="">Loading models...</option>');
+
+        try {
+            const data = await API.listModels();
+            const models = (data.models || []).filter(m => m.enabled !== false);
+
+            let options = '<option value="">Select model...</option>';
+
+            for (const model of models) {
+                const selected = model.id === selectedId ? 'selected' : '';
+                const provider = model.config?.provider || 'unknown';
+                options += `<option value="${Utils.escapeHtml(model.id)}" ${selected}>${Utils.escapeHtml(model.name)} (${Utils.escapeHtml(provider)})</option>`;
+            }
+
+            if (models.length === 0) {
+                options = '<option value="">No models found</option>';
+            }
+
+            $select.html(options);
+        } catch (error) {
+            $select.html('<option value="">Failed to load models</option>');
+            console.error('Failed to load models:', error);
+        }
+    }
+
+    async function loadCragPrompts(selectedId = null, existingVariables = null) {
+        const $select = $('.crag-prompt-select');
+        $select.html('<option value="">Loading prompts...</option>');
+
+        try {
+            const data = await API.listPrompts();
+            cachedPrompts = (data.prompts || []).filter(p => p.enabled !== false);
+
+            let options = '<option value="">Select prompt...</option>';
+
+            for (const prompt of cachedPrompts) {
+                const selected = prompt.id === selectedId ? 'selected' : '';
+                options += `<option value="${Utils.escapeHtml(prompt.id)}" ${selected}>${Utils.escapeHtml(prompt.name)}</option>`;
+            }
+
+            if (cachedPrompts.length === 0) {
+                options = '<option value="">No prompts found</option>';
+            }
+
+            $select.html(options);
+
+            // If a prompt was pre-selected, load its variables
+            if (selectedId) {
+                await handleCragPromptSelection(selectedId, existingVariables);
+            }
+        } catch (error) {
+            $select.html('<option value="">Failed to load prompts</option>');
+            console.error('Failed to load prompts:', error);
+        }
+    }
+
+    async function handleCragPromptSelection(promptId, existingVariables = null) {
+        const $section = $('#crag-prompt-variables-section');
+        const $container = $('#crag-prompt-variables-container');
+
+        if (!promptId) {
+            $section.addClass('hidden');
+            $container.html('');
+            return;
+        }
+
+        // Try to find prompt in cache, otherwise fetch it
+        let prompt = cachedPrompts.find(p => p.id === promptId);
+
+        if (!prompt) {
+            try {
+                prompt = await API.getPrompt(promptId);
+            } catch (error) {
+                console.error('Failed to load prompt:', error);
+                $section.addClass('hidden');
+                return;
+            }
+        }
+
+        const variables = extractPromptVariables(prompt.content || '');
+
+        if (variables.length === 0) {
+            $section.addClass('hidden');
+            $container.html('<p class="text-sm text-gray-500 italic">This prompt has no variables.</p>');
+            return;
+        }
+
+        // Parse existing variables if provided
+        let existingVarsMap = {};
+
+        if (existingVariables && typeof existingVariables === 'object') {
+            existingVarsMap = existingVariables;
+        }
+
+        // Render variable inputs
+        let html = '';
+
+        for (const variable of variables) {
+            const existingValue = existingVarsMap[variable.name] || variable.defaultValue || '';
+            html += `
+                <div class="flex items-center gap-2">
+                    <label class="w-32 text-sm font-medium text-gray-600 shrink-0">\${var:${Utils.escapeHtml(variable.name)}}</label>
+                    <input type="text" name="crag_prompt_var_${Utils.escapeHtml(variable.name)}"
+                        value="${Utils.escapeHtml(existingValue)}"
+                        class="form-input flex-1 text-sm"
+                        placeholder="\${request:field} or \${step:name:field}">
+                </div>
+            `;
+        }
+
+        $container.html(html);
+        $section.removeClass('hidden');
+
+        // Update hidden field with variable names for form processing
+        updateCragPromptVariablesJson();
+    }
+
+    function updateCragPromptVariablesJson() {
+        const variables = {};
+        $('[name^="crag_prompt_var_"]').each(function() {
+            const name = $(this).attr('name').replace('crag_prompt_var_', '');
+            const value = $(this).val().trim();
+
+            if (value) {
+                variables[name] = value;
+            }
+        });
+        $('[name="crag_prompt_variables_json"]').val(JSON.stringify(variables));
+    }
+
     function extractPromptVariables(content) {
         // Match ${var:variable-name} or ${var:variable-name:default-value}
         const regex = /\$\{var:([a-zA-Z_][a-zA-Z0-9_-]*?)(?::([^}]*))?\}/g;
@@ -1542,8 +1928,9 @@ const Workflows = (function() {
         lastFocusedPromptVar = null;
         // Clean up event listeners
         $(document).off('click.varPicker');
-        $(document).off('focus', '[name^="prompt_var_"]');
+        $(document).off('focus', '[name^="prompt_var_"], [name^="crag_prompt_var_"]');
         $(document).off('input', '[name^="prompt_var_"]');
+        $(document).off('input', '[name^="crag_prompt_var_"]');
         $('.variable-picker-dropdown').remove();
     }
 
@@ -1568,10 +1955,10 @@ const Workflows = (function() {
             // Close any existing dropdowns
             $('.variable-picker-dropdown').remove();
 
-            // For prompt_var_target, use the last focused prompt variable input
+            // For prompt_var_target or crag_prompt_var_target, use the last focused prompt variable input
             let actualTargetId = targetId;
 
-            if (targetId === 'prompt_var_target' && lastFocusedPromptVar) {
+            if ((targetId === 'prompt_var_target' || targetId === 'crag_prompt_var_target') && lastFocusedPromptVar) {
                 actualTargetId = lastFocusedPromptVar;
             }
 
@@ -1598,8 +1985,8 @@ const Workflows = (function() {
             }
         });
 
-        // Track focus on prompt variable inputs for the dynamic picker
-        $(document).on('focus', '[name^="prompt_var_"]', function() {
+        // Track focus on prompt variable inputs for the dynamic picker (both chat_completion and crag_scoring)
+        $(document).on('focus', '[name^="prompt_var_"], [name^="crag_prompt_var_"]', function() {
             lastFocusedPromptVar = $(this).attr('name');
         });
 
@@ -1614,6 +2001,30 @@ const Workflows = (function() {
             $(document).on('input', '[name^="prompt_var_"]', function() {
                 updatePromptVariablesJson();
             });
+        }
+
+        // Handle prompt selection change for crag_scoring
+        if (stepType === 'crag_scoring') {
+            $('.crag-prompt-select').on('change', async function() {
+                const promptId = $(this).val();
+                await handleCragPromptSelection(promptId);
+            });
+
+            // Update hidden JSON field when CRAG variable inputs change
+            $(document).on('input', '[name^="crag_prompt_var_"]', function() {
+                updateCragPromptVariablesJson();
+            });
+        }
+
+        // Handle filter builder for knowledge_base_search
+        if (stepType === 'knowledge_base_search') {
+            // Add filter row button
+            $('.add-filter-row-btn').on('click', function() {
+                addFilterRow();
+            });
+
+            // Bind events for existing filter rows
+            bindFilterRowEvents();
         }
 
         $('#step-form').on('submit', function(e) {
@@ -1691,17 +2102,34 @@ const Workflows = (function() {
             const minScore = parseFloat($('[name="min_score"]').val());
 
             if (!isNaN(minScore)) step.min_score = minScore;
+
+            // Build metadata filter from UI
+            const filter = buildFilterFromUI();
+
+            if (filter) {
+                step.filter = filter;
+            }
         } else if (stepType === 'crag_scoring') {
+            step.model_id = $('[name="model_id"]').val().trim();
+            step.prompt_id = $('[name="prompt_id"]').val().trim();
             step.documents_source = $('[name="documents_source"]').val().trim();
             step.query = $('[name="query"]').val();
+
+            // Parse prompt variables from the hidden JSON field
+            try {
+                const varsJson = $('[name="crag_prompt_variables_json"]').val();
+                const vars = JSON.parse(varsJson || '{}');
+
+                if (Object.keys(vars).length > 0) {
+                    step.prompt_variables = vars;
+                }
+            } catch (e) {
+                console.error('Failed to parse CRAG prompt variables:', e);
+            }
 
             const threshold = parseFloat($('[name="threshold"]').val());
 
             if (!isNaN(threshold)) step.threshold = threshold;
-
-            const scoringModel = $('[name="scoring_model"]').val().trim();
-
-            if (scoringModel) step.scoring_model = scoringModel;
         } else if (stepType === 'conditional') {
             try {
                 step.conditions = JSON.parse($('[name="conditions"]').val());

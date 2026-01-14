@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use tracing::debug;
 
-use crate::domain::knowledge_base::{SearchParams, SearchResult};
+use crate::domain::knowledge_base::{MetadataFilter, SearchParams, SearchResult};
 use crate::domain::llm::ProviderResolver;
 use crate::domain::storage::Storage;
 use crate::domain::{
@@ -270,13 +270,28 @@ impl WorkflowExecutorImpl {
             .provider_resolver
             .resolve(&step.model_id)
             .await
-            .map_err(|e| WorkflowError::step_execution("chat_completion", e.to_string()))?;
+            .map_err(|e| {
+                tracing::error!(
+                    model_id = %step.model_id,
+                    error = %e,
+                    "Failed to resolve LLM provider for chat completion"
+                );
+                WorkflowError::step_execution("chat_completion", e.to_string())
+            })?;
 
         // Execute using the resolved provider
         let response = provider
             .chat(&step.model_id, request)
             .await
-            .map_err(|e| WorkflowError::step_execution("chat_completion", e.to_string()))?;
+            .map_err(|e| {
+                tracing::error!(
+                    model_id = %step.model_id,
+                    prompt_id = %step.prompt_id,
+                    error = %e,
+                    "Chat completion failed"
+                );
+                WorkflowError::step_execution("chat_completion", e.to_string())
+            })?;
 
         // Extract content from response
         let content = response.message.content_text().unwrap_or_default().to_string();
@@ -331,8 +346,11 @@ impl WorkflowExecutorImpl {
         let query = context.resolve_string(&step.query)?;
 
         debug!(
-            "KB search for KB '{}' with query: {}",
-            step.knowledge_base_id, query
+            kb_id = %step.knowledge_base_id,
+            query = %query,
+            top_k = step.top_k,
+            has_filter = step.filter.is_some(),
+            "Executing KB search step"
         );
 
         // Get the provider for this knowledge base
@@ -340,7 +358,14 @@ impl WorkflowExecutorImpl {
             .kb_provider_registry
             .get_required(&step.knowledge_base_id)
             .await
-            .map_err(|e| WorkflowError::step_execution("kb_search", e.to_string()))?;
+            .map_err(|e| {
+                tracing::error!(
+                    kb_id = %step.knowledge_base_id,
+                    error = %e,
+                    "Failed to get KB provider"
+                );
+                WorkflowError::step_execution("kb_search", e.to_string())
+            })?;
 
         // Build search parameters
         let mut search_params = SearchParams::new(&query).with_top_k(step.top_k);
@@ -349,11 +374,37 @@ impl WorkflowExecutorImpl {
             search_params = search_params.with_similarity_threshold(threshold);
         }
 
+        // Apply metadata filter if provided
+        if let Some(filter_json) = &step.filter {
+            match serde_json::from_value::<MetadataFilter>(filter_json.clone()) {
+                Ok(filter) => {
+                    debug!(filter = ?filter_json, "Applying metadata filter to KB search");
+                    search_params = search_params.with_filter(filter);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        kb_id = %step.knowledge_base_id,
+                        error = %e,
+                        filter = ?filter_json,
+                        "Failed to parse metadata filter, continuing without filter"
+                    );
+                }
+            }
+        }
+
         // Execute the search
         let results = provider
             .search(search_params)
             .await
-            .map_err(|e| WorkflowError::step_execution("kb_search", e.to_string()))?;
+            .map_err(|e| {
+                tracing::error!(
+                    kb_id = %step.knowledge_base_id,
+                    error = %e,
+                    query = %query,
+                    "KB search failed"
+                );
+                WorkflowError::step_execution("kb_search", e.to_string())
+            })?;
 
         debug!("KB search returned {} results", results.len());
 
@@ -569,7 +620,16 @@ impl WorkflowExecutorImpl {
         let response = request
             .send()
             .await
-            .map_err(|e| WorkflowError::step_execution("http_request", e.to_string()))?;
+            .map_err(|e| {
+                tracing::error!(
+                    external_api_id = %step.external_api_id,
+                    url = %url,
+                    method = ?step.method,
+                    error = %e,
+                    "HTTP request failed to send"
+                );
+                WorkflowError::step_execution("http_request", e.to_string())
+            })?;
 
         let status = response.status();
         let status_code = status.as_u16();
@@ -578,6 +638,14 @@ impl WorkflowExecutorImpl {
         // Check for error status if fail_on_error is true
         if step.fail_on_error && !is_success {
             let error_body = response.text().await.unwrap_or_default();
+            tracing::error!(
+                external_api_id = %step.external_api_id,
+                url = %url,
+                method = ?step.method,
+                status_code = status_code,
+                error_body = %error_body,
+                "HTTP request returned error status"
+            );
             return Err(WorkflowError::step_execution(
                 "http_request",
                 format!(

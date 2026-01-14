@@ -189,15 +189,15 @@ impl<E: EmbeddingProvider> PgvectorKnowledgeBase<E> {
     }
 
     /// Convert a filter to SQL WHERE clause
-    fn filter_to_sql(&self, filter: &MetadataFilter, params: &mut Vec<String>) -> String {
+    /// Values are embedded directly in the SQL string for simplicity
+    /// `table_alias` is an optional table alias prefix (e.g., "c" for "c.metadata")
+    fn filter_to_sql(&self, filter: &MetadataFilter, table_alias: Option<&str>) -> String {
         match filter {
-            MetadataFilter::Condition(condition) => {
-                self.condition_to_sql(condition, params)
-            }
+            MetadataFilter::Condition(condition) => self.condition_to_sql(condition, table_alias),
             MetadataFilter::Group { connector, filters } => {
                 let clauses: Vec<String> = filters
                     .iter()
-                    .map(|f| self.filter_to_sql(f, params))
+                    .map(|f| self.filter_to_sql(f, table_alias))
                     .filter(|s| !s.is_empty())
                     .collect();
 
@@ -215,25 +215,29 @@ impl<E: EmbeddingProvider> PgvectorKnowledgeBase<E> {
         }
     }
 
-    fn condition_to_sql(&self, condition: &FilterCondition, params: &mut Vec<String>) -> String {
+    fn condition_to_sql(
+        &self,
+        condition: &FilterCondition,
+        table_alias: Option<&str>,
+    ) -> String {
         let key = &condition.key;
-        let json_path = format!("metadata->'{}'", key);
+        let metadata_col = match table_alias {
+            Some(alias) => format!("{}.metadata", alias),
+            None => "metadata".to_string(),
+        };
+        let json_path = format!("{}->'{}'", metadata_col, key);
 
         match &condition.operator {
             FilterOperator::Exists => {
-                format!("metadata ? '{}'", key)
+                format!("{} ? '{}'", metadata_col, key)
             }
             FilterOperator::NotExists => {
-                format!("NOT (metadata ? '{}')", key)
+                format!("NOT ({} ? '{}')", metadata_col, key)
             }
             _ => {
                 if let Some(value) = &condition.value {
-                    let (op, val_sql) = self.operator_and_value_sql(
-                        &condition.operator,
-                        value,
-                        &json_path,
-                        params,
-                    );
+                    let (op, val_sql) =
+                        self.operator_and_value_sql(&condition.operator, value);
                     format!("{} {} {}", json_path, op, val_sql)
                 } else {
                     String::new()
@@ -246,62 +250,74 @@ impl<E: EmbeddingProvider> PgvectorKnowledgeBase<E> {
         &self,
         op: &FilterOperator,
         value: &FilterValue,
-        _json_path: &str,
-        params: &mut Vec<String>,
     ) -> (&'static str, String) {
-        let param_idx = params.len() + 1;
-
         match op {
             FilterOperator::Eq => {
                 let val = self.filter_value_to_json(value);
-                params.push(val);
-                ("=", format!("${}", param_idx))
+                ("=", format!("'{}'::jsonb", val))
             }
             FilterOperator::Ne => {
                 let val = self.filter_value_to_json(value);
-                params.push(val);
-                ("!=", format!("${}", param_idx))
+                ("!=", format!("'{}'::jsonb", val))
             }
             FilterOperator::Gt => {
                 let val = self.filter_value_to_numeric_string(value);
-                params.push(val);
-                (">", format!("({}::text)::numeric", format!("${}", param_idx)))
+                (
+                    ">",
+                    format!("('{}'::text)::numeric", val),
+                )
             }
             FilterOperator::Gte => {
                 let val = self.filter_value_to_numeric_string(value);
-                params.push(val);
-                (">=", format!("({}::text)::numeric", format!("${}", param_idx)))
+                (
+                    ">=",
+                    format!("('{}'::text)::numeric", val),
+                )
             }
             FilterOperator::Lt => {
                 let val = self.filter_value_to_numeric_string(value);
-                params.push(val);
-                ("<", format!("({}::text)::numeric", format!("${}", param_idx)))
+                (
+                    "<",
+                    format!("('{}'::text)::numeric", val),
+                )
             }
             FilterOperator::Lte => {
                 let val = self.filter_value_to_numeric_string(value);
-                params.push(val);
-                ("<=", format!("({}::text)::numeric", format!("${}", param_idx)))
+                (
+                    "<=",
+                    format!("('{}'::text)::numeric", val),
+                )
             }
             FilterOperator::Contains => {
                 if let FilterValue::String(s) = value {
-                    params.push(format!("%{}%", s));
-                    ("LIKE", format!("{}::text", format!("${}", param_idx)))
+                    // Escape single quotes for SQL
+                    let escaped = s.replace('\'', "''");
+                    (
+                        "LIKE",
+                        format!("'%{}%'", escaped),
+                    )
                 } else {
                     ("=", "NULL".to_string())
                 }
             }
             FilterOperator::StartsWith => {
                 if let FilterValue::String(s) = value {
-                    params.push(format!("{}%", s));
-                    ("LIKE", format!("{}::text", format!("${}", param_idx)))
+                    let escaped = s.replace('\'', "''");
+                    (
+                        "LIKE",
+                        format!("'{}%'", escaped),
+                    )
                 } else {
                     ("=", "NULL".to_string())
                 }
             }
             FilterOperator::EndsWith => {
                 if let FilterValue::String(s) = value {
-                    params.push(format!("%{}", s));
-                    ("LIKE", format!("{}::text", format!("${}", param_idx)))
+                    let escaped = s.replace('\'', "''");
+                    (
+                        "LIKE",
+                        format!("'%{}'", escaped),
+                    )
                 } else {
                     ("=", "NULL".to_string())
                 }
@@ -313,9 +329,10 @@ impl<E: EmbeddingProvider> PgvectorKnowledgeBase<E> {
                         .map(|v| self.filter_value_to_json(v))
                         .collect();
                     let array_str = format!("[{}]", json_array.join(","));
-                    params.push(array_str.clone());
-                    // Use @> to check if json_path value is in the array
-                    return ("= ANY", format!("(SELECT jsonb_array_elements('{}'::jsonb))", array_str));
+                    return (
+                        "= ANY",
+                        format!("(SELECT jsonb_array_elements('{}'::jsonb))", array_str),
+                    );
                 }
                 ("=", "NULL".to_string())
             }
@@ -326,12 +343,15 @@ impl<E: EmbeddingProvider> PgvectorKnowledgeBase<E> {
                         .map(|v| self.filter_value_to_json(v))
                         .collect();
                     let array_str = format!("[{}]", json_array.join(","));
-                    return ("NOT IN", format!("(SELECT jsonb_array_elements('{}'::jsonb))", array_str));
+                    return (
+                        "NOT IN",
+                        format!("(SELECT jsonb_array_elements('{}'::jsonb))", array_str),
+                    );
                 }
                 ("=", "NULL".to_string())
             }
             FilterOperator::Exists | FilterOperator::NotExists => {
-                // Handled separately
+                // Handled separately in condition_to_sql
                 ("=", "NULL".to_string())
             }
         }
@@ -382,6 +402,7 @@ impl<E: EmbeddingProvider + 'static> KnowledgeBaseProvider for PgvectorKnowledge
             query = %params.query,
             top_k = params.top_k,
             similarity_threshold = params.similarity_threshold,
+            has_filter = params.filter.is_some(),
             "Starting KB search"
         );
 
@@ -404,6 +425,23 @@ impl<E: EmbeddingProvider + 'static> KnowledgeBaseProvider for PgvectorKnowledge
         let embedding_str = self.embedding_to_pgvector(&query_embedding);
         let op = self.config.distance_metric.operator();
 
+        // Build filter SQL if filter is provided (use "c" as table alias for chunks table)
+        let filter_sql = params
+            .filter
+            .as_ref()
+            .map(|f| self.filter_to_sql(f, Some("c")))
+            .filter(|s| !s.is_empty())
+            .map(|s| format!(" AND {}", s))
+            .unwrap_or_default();
+
+        if !filter_sql.is_empty() {
+            tracing::debug!(
+                kb_id = self.id.as_str(),
+                filter_sql = %filter_sql,
+                "Applying metadata filter to search"
+            );
+        }
+
         // Query the new schema (knowledge_base_document_chunks) which is used by document ingestion
         // Join with documents table to exclude disabled documents
         let query = format!(
@@ -418,17 +456,25 @@ impl<E: EmbeddingProvider + 'static> KnowledgeBaseProvider for PgvectorKnowledge
             FROM knowledge_base_document_chunks c
             JOIN knowledge_base_documents d ON c.document_id = d.id
             WHERE c.kb_id = '{}'
-              AND (d.disabled IS NULL OR d.disabled = false)
+              AND (d.disabled IS NULL OR d.disabled = false){}
             ORDER BY distance
             LIMIT {}
             "#,
-            op, embedding_str, self.id.as_str(), params.top_k
+            op, embedding_str, self.id.as_str(), filter_sql, params.top_k
         );
 
         let rows = sqlx::query(&query)
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| DomainError::knowledge_base(format!("Search failed: {}", e)))?;
+            .map_err(|e| {
+                tracing::error!(
+                    kb_id = self.id.as_str(),
+                    error = %e,
+                    query = %query,
+                    "KB search failed"
+                );
+                DomainError::knowledge_base(format!("Search failed: {}", e))
+            })?;
 
         tracing::debug!(
             kb_id = self.id.as_str(),
@@ -582,8 +628,7 @@ impl<E: EmbeddingProvider + 'static> KnowledgeBaseProvider for PgvectorKnowledge
         &self,
         filter: MetadataFilter,
     ) -> Result<DeleteDocumentsResult, DomainError> {
-        let mut params: Vec<String> = Vec::new();
-        let filter_sql = self.filter_to_sql(&filter, &mut params);
+        let filter_sql = self.filter_to_sql(&filter, None);
 
         if filter_sql.is_empty() {
             return Ok(DeleteDocumentsResult::new(0, 0));
@@ -596,7 +641,10 @@ impl<E: EmbeddingProvider + 'static> KnowledgeBaseProvider for PgvectorKnowledge
             filter_sql
         );
 
+        tracing::debug!(query = %query, "Executing delete by filter");
+
         let result = sqlx::query(&query).execute(&self.pool).await.map_err(|e| {
+            tracing::error!(error = %e, query = %query, "Failed to delete by filter");
             DomainError::knowledge_base(format!("Failed to delete by filter: {}", e))
         })?;
 
