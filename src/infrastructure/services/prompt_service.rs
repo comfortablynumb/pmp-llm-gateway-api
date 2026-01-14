@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use crate::domain::storage::Storage;
 use crate::domain::{
-    DomainError, ModelValidationError, Prompt, PromptId, PromptTemplate, TemplateError,
+    DomainError, ModelValidationError, Prompt, PromptId, PromptOutputSchema, PromptTemplate,
+    TemplateError,
 };
 
 /// Request to create a new prompt
@@ -18,6 +19,7 @@ pub struct CreatePromptRequest {
     pub tags: Vec<String>,
     pub enabled: bool,
     pub max_history: Option<usize>,
+    pub output_schema: Option<PromptOutputSchema>,
 }
 
 /// Request to update an existing prompt
@@ -29,6 +31,7 @@ pub struct UpdatePromptRequest {
     pub content_message: Option<String>,
     pub tags: Option<Vec<String>>,
     pub enabled: Option<bool>,
+    pub output_schema: Option<PromptOutputSchema>,
 }
 
 /// Request to render a prompt
@@ -117,6 +120,10 @@ impl<S: Storage<Prompt>> PromptService<S> {
 
         prompt = prompt.with_tags(request.tags).with_enabled(request.enabled);
 
+        if let Some(output_schema) = request.output_schema {
+            prompt = prompt.with_output_schema(output_schema);
+        }
+
         self.storage.create(prompt).await
     }
 
@@ -156,6 +163,10 @@ impl<S: Storage<Prompt>> PromptService<S> {
 
         if let Some(enabled) = request.enabled {
             prompt.set_enabled(enabled);
+        }
+
+        if let Some(output_schema) = request.output_schema {
+            prompt.set_output_schema(Some(output_schema));
         }
 
         self.storage.update(prompt).await
@@ -260,6 +271,7 @@ impl<S: Storage<Prompt>> PromptService<S> {
                 content_message: None,
                 tags: None,
                 enabled: Some(true),
+                output_schema: None,
             },
         )
         .await
@@ -276,6 +288,7 @@ impl<S: Storage<Prompt>> PromptService<S> {
                 content_message: None,
                 tags: None,
                 enabled: Some(false),
+                output_schema: None,
             },
         )
         .await
@@ -326,6 +339,7 @@ mod tests {
             tags: vec!["test".to_string()],
             enabled: true,
             max_history: Some(5),
+            output_schema: None,
         }
     }
 
@@ -364,6 +378,7 @@ mod tests {
             tags: vec![],
             enabled: true,
             max_history: None,
+            output_schema: None,
         };
 
         let result = service.create(request).await;
@@ -437,6 +452,7 @@ mod tests {
                     content_message: Some("Updated template".to_string()),
                     tags: None,
                     enabled: None,
+                    output_schema: None,
                 },
             )
             .await
@@ -459,6 +475,7 @@ mod tests {
             tags: vec![],
             enabled: true,
             max_history: None,
+            output_schema: None,
         };
 
         service.create(request).await.unwrap();

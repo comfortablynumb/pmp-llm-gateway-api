@@ -231,25 +231,21 @@ impl WorkflowExecutorImpl {
         step: &crate::domain::ChatCompletionStep,
         context: &WorkflowContext,
     ) -> Result<Value, WorkflowError> {
-        // Resolve variable references in messages
-        let user_message = context.resolve_string(&step.user_message)?;
-
-        // Resolve prompt_id to system message content
-        let system_template = self.resolve_prompt(&step.prompt_id).await?;
+        // Resolve prompt_id to message content
+        let prompt_template = self.resolve_prompt(&step.prompt_id).await?;
 
         // Render the prompt template with prompt_variables
         // First, resolve any ${request:*} or ${step:*:*} in the variable values
         // Then, substitute ${var:*} placeholders with the resolved values
-        let system_message = self.render_prompt_with_variables(
-            &system_template,
+        let rendered_prompt = self.render_prompt_with_variables(
+            &prompt_template,
             &step.prompt_variables,
             context,
         )?;
 
-        // Build request
+        // Build request - use rendered prompt as user message
         let mut request_builder = LlmRequest::builder();
-        request_builder = request_builder.system(&system_message);
-        request_builder = request_builder.user(&user_message);
+        request_builder = request_builder.user(&rendered_prompt);
 
         if let Some(temp) = step.temperature {
             request_builder = request_builder.temperature(temp);
@@ -296,10 +292,9 @@ impl WorkflowExecutorImpl {
         // Extract content from response
         let content = response.message.content_text().unwrap_or_default().to_string();
 
-        // Build prompt object with exact messages used
+        // Build prompt object with exact message used
         let prompt = json!({
-            "system": system_message,
-            "user": user_message,
+            "content": rendered_prompt,
         });
 
         // Serialize full response object
@@ -435,31 +430,195 @@ impl WorkflowExecutorImpl {
     }
 
     /// Execute a CRAG scoring step
+    ///
+    /// This step:
+    /// 1. Renders the configured prompt with all prompt_variables (resolved from context)
+    /// 2. Makes ONE LLM call with structured output expecting a "scores" map (doc_id -> score)
+    /// 3. Filters the documents array based on scores >= threshold
+    /// 4. Returns the filtered documents and the rendered prompt
     async fn execute_crag_scoring(
         &self,
         step: &crate::domain::CragScoringStep,
         context: &WorkflowContext,
     ) -> Result<Value, WorkflowError> {
-        // Resolve input documents reference
-        let documents = context.resolve_expression(&step.input_documents)?;
-        let _query = context.resolve_string(&step.query)?;
+        debug!(
+            model_id = %step.model_id,
+            prompt_id = %step.prompt_id,
+            threshold = step.threshold,
+            "Executing CRAG scoring step"
+        );
 
-        // TODO: Integrate with actual CRAG pipeline
-        // For now, pass through documents as "correct" if they exist
+        // Get the prompt template
+        let prompt = self.resolve_prompt(&step.prompt_id).await?;
 
-        debug!("CRAG scoring requested - returning placeholder");
+        // Get documents array from documents_source
+        // Can be a variable reference like "${step:search:documents}" or a simple field name
+        let documents = if step.documents_source.starts_with("${") {
+            // It's a variable reference, resolve it
+            context.resolve_expression(&step.documents_source)?
+        } else {
+            // It's a simple field name, treat as empty (user should use variable syntax)
+            Value::Array(vec![])
+        };
 
         let doc_array = documents.as_array().cloned().unwrap_or_default();
-        let correct_count = doc_array.len();
+
+        // Render the prompt with all prompt_variables resolved
+        let rendered_prompt = self.render_prompt_with_variables(
+            &prompt,
+            &step.prompt_variables.clone().unwrap_or_default(),
+            context,
+        )?;
+
+        // If no documents, return empty result with the rendered prompt
+        if doc_array.is_empty() {
+            return Ok(json!({
+                "documents": [],
+                "relevant_documents": [],
+                "scored_documents": [],
+                "scores": {},
+                "relevant_count": 0,
+                "threshold": step.threshold,
+                "rendered_prompt": rendered_prompt,
+            }));
+        }
+
+        // Resolve the LLM provider and get the provider_model name
+        let resolved = self
+            .provider_resolver
+            .resolve_with_model(&step.model_id)
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    model_id = %step.model_id,
+                    error = %e,
+                    "Failed to resolve LLM provider for CRAG scoring"
+                );
+                WorkflowError::step_execution("crag_scoring", e.to_string())
+            })?;
+
+        debug!(
+            model_id = %step.model_id,
+            provider_model = %resolved.provider_model,
+            "Using provider_model for CRAG scoring"
+        );
+
+        // Build LLM request with JSON schema for structured output
+        // Note: Requires a model that supports structured outputs (gpt-4o, gpt-4o-mini, etc.)
+        // Using array format since OpenAI strict mode doesn't support additionalProperties
+        let request = LlmRequest::builder()
+            .user(&rendered_prompt)
+            .json_schema(
+                "crag_scores",
+                json!({
+                    "type": "object",
+                    "description": "Document relevance scores for CRAG (Corrective RAG) scoring",
+                    "properties": {
+                        "scores": {
+                            "type": "array",
+                            "description": "Array of document relevance scores. Each document must be scored on a scale from 0.00 to 1.00 where: 0.00 = completely irrelevant, 0.25 = slightly relevant, 0.50 = moderately relevant, 0.75 = highly relevant, 1.00 = perfectly relevant. Use decimal values with two decimal places (e.g., 0.85, 0.42).",
+                            "items": {
+                                "type": "object",
+                                "description": "A single document's relevance score",
+                                "properties": {
+                                    "id": {
+                                        "type": "string",
+                                        "description": "The unique document ID (must match the ID from the input documents)"
+                                    },
+                                    "score": {
+                                        "type": "number",
+                                        "description": "Relevance score as a decimal between 0.00 and 1.00 (inclusive). Must NOT be an integer like 1, 5, or 10. Examples: 0.00, 0.25, 0.50, 0.75, 0.85, 1.00"
+                                    }
+                                },
+                                "required": ["id", "score"],
+                                "additionalProperties": false
+                            }
+                        }
+                    },
+                    "required": ["scores"],
+                    "additionalProperties": false
+                }),
+                true,
+            )
+            .build();
+
+        // Execute scoring with ONE LLM call using the provider_model
+        let response = resolved
+            .provider
+            .chat(&resolved.provider_model, request)
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    model_id = %step.model_id,
+                    provider_model = %resolved.provider_model,
+                    error = %e,
+                    "CRAG scoring LLM call failed"
+                );
+                WorkflowError::step_execution("crag_scoring", e.to_string())
+            })?;
+
+        // Parse scores array from response and convert to map
+        let content = response.message.content_text().unwrap_or_default();
+        let scores_array: Vec<Value> = serde_json::from_str::<Value>(content)
+            .ok()
+            .and_then(|v| v.get("scores").cloned())
+            .and_then(|s| s.as_array().cloned())
+            .unwrap_or_default();
+
+        // Convert array of {id, score} to HashMap
+        let scores_map: std::collections::HashMap<String, f64> = scores_array
+            .iter()
+            .filter_map(|item| {
+                let id = item.get("id")?.as_str()?.to_string();
+                let score = item.get("score")?.as_f64()?;
+                Some((id, score))
+            })
+            .collect();
+
+        debug!(
+            scores_count = scores_map.len(),
+            "Received scores from LLM"
+        );
+
+        // Filter documents based on scores >= threshold
+        let mut relevant_documents = Vec::new();
+        let mut scored_documents = Vec::new();
+
+        for doc in &doc_array {
+            let doc_id = doc
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            let score = scores_map.get(doc_id).copied().unwrap_or(0.0);
+
+            // Build scored document with score attached
+            let scored_doc = json!({
+                "id": doc_id,
+                "content": doc.get("content").cloned().unwrap_or(Value::Null),
+                "score": score,
+                "metadata": doc.get("metadata").cloned().unwrap_or(Value::Null),
+                "source": doc.get("source").cloned().unwrap_or(Value::Null),
+            });
+
+            scored_documents.push(scored_doc.clone());
+
+            // Filter: keep documents with score >= threshold
+            if score >= step.threshold as f64 {
+                relevant_documents.push(scored_doc);
+            }
+        }
+
+        let relevant_count = relevant_documents.len();
 
         Ok(json!({
-            "correct_documents": doc_array,
-            "ambiguous_documents": [],
-            "incorrect_documents": [],
-            "correct_count": correct_count,
+            "documents": relevant_documents.clone(),
+            "relevant_documents": relevant_documents,
+            "scored_documents": scored_documents,
+            "scores": scores_map,
+            "relevant_count": relevant_count,
             "threshold": step.threshold,
-            "strategy": format!("{:?}", step.strategy),
-            "message": "CRAG integration pending - all documents marked as correct"
+            "rendered_prompt": rendered_prompt,
         }))
     }
 
@@ -714,11 +873,10 @@ impl WorkflowExecutorImpl {
     ) -> Result<Value, WorkflowError> {
         match step.step_type() {
             WorkflowStepType::ChatCompletion(chat_step) => {
-                let resolved_user_message = context.resolve_string(&chat_step.user_message)?;
                 Ok(json!({
                     "model_id": chat_step.model_id,
                     "prompt_id": chat_step.prompt_id,
-                    "user_message": resolved_user_message,
+                    "prompt_variables": chat_step.prompt_variables,
                     "temperature": chat_step.temperature,
                     "max_tokens": chat_step.max_tokens,
                 }))
@@ -733,13 +891,24 @@ impl WorkflowExecutorImpl {
                 }))
             }
             WorkflowStepType::CragScoring(crag_step) => {
-                let resolved_query = context.resolve_string(&crag_step.query)?;
-                let resolved_documents = context.resolve_expression(&crag_step.input_documents)?;
+                // Get documents array from documents_source
+                let doc_count = if crag_step.documents_source.starts_with("${") {
+                    context
+                        .resolve_expression(&crag_step.documents_source)
+                        .ok()
+                        .and_then(|v| v.as_array().map(|a| a.len()))
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+
                 Ok(json!({
-                    "query": resolved_query,
-                    "input_documents": resolved_documents,
+                    "model_id": crag_step.model_id,
+                    "prompt_id": crag_step.prompt_id,
+                    "documents_source": crag_step.documents_source,
+                    "documents_count": doc_count,
+                    "prompt_variables": crag_step.prompt_variables,
                     "threshold": crag_step.threshold,
-                    "strategy": format!("{:?}", crag_step.strategy),
                 }))
             }
             WorkflowStepType::Conditional(cond_step) => {
@@ -1167,11 +1336,10 @@ mod tests {
         Workflow::new(WorkflowId::new("test").unwrap(), "Test Workflow").with_step(
             WorkflowStep::new(
                 "chat",
-                WorkflowStepType::ChatCompletion(ChatCompletionStep::new(
-                    "gpt-4",
-                    "greeting-prompt",
-                    "What is ${request:name}?",
-                )),
+                WorkflowStepType::ChatCompletion(
+                    ChatCompletionStep::new("gpt-4", "greeting-prompt")
+                        .with_prompt_variable("name", "${request:name}"),
+                ),
             ),
         )
     }
@@ -1256,11 +1424,7 @@ mod tests {
             ))
             .with_step(WorkflowStep::new(
                 "chat",
-                WorkflowStepType::ChatCompletion(ChatCompletionStep::new(
-                    "gpt-4",
-                    "system-prompt",
-                    "Hello",
-                )),
+                WorkflowStepType::ChatCompletion(ChatCompletionStep::new("gpt-4", "system-prompt")),
             ));
 
         // Non-empty value should continue to chat step
@@ -1296,11 +1460,7 @@ mod tests {
             ))
             .with_step(WorkflowStep::new(
                 "chat",
-                WorkflowStepType::ChatCompletion(ChatCompletionStep::new(
-                    "gpt-4",
-                    "system-prompt",
-                    "Hello",
-                )),
+                WorkflowStepType::ChatCompletion(ChatCompletionStep::new("gpt-4", "system-prompt")),
             ));
 
         // Empty value should end workflow early
@@ -1335,19 +1495,14 @@ mod tests {
         let workflow = Workflow::new(WorkflowId::new("chain").unwrap(), "Chain Test")
             .with_step(WorkflowStep::new(
                 "step1",
-                WorkflowStepType::ChatCompletion(ChatCompletionStep::new(
-                    "gpt-4",
-                    "system-prompt",
-                    "First",
-                )),
+                WorkflowStepType::ChatCompletion(ChatCompletionStep::new("gpt-4", "system-prompt")),
             ))
             .with_step(WorkflowStep::new(
                 "step2",
-                WorkflowStepType::ChatCompletion(ChatCompletionStep::new(
-                    "gpt-4",
-                    "chat-prompt",
-                    "Use ${step:step1:summary}",
-                )),
+                WorkflowStepType::ChatCompletion(
+                    ChatCompletionStep::new("gpt-4", "chat-prompt")
+                        .with_prompt_variable("summary", "${step:step1:summary}"),
+                ),
             ));
 
         let result = executor.execute(&workflow, json!({})).await.unwrap();
@@ -1364,15 +1519,15 @@ mod tests {
         let prompt_storage = Arc::new(MockStorage::<Prompt>::new()); // Empty storage
         let executor = WorkflowExecutorImpl::new(resolver, prompt_storage, create_mock_credential_service(), create_mock_external_api_service(), create_mock_kb_registry());
 
-        let workflow = Workflow::new(WorkflowId::new("test").unwrap(), "Test")
-            .with_step(WorkflowStep::new(
+        let workflow = Workflow::new(WorkflowId::new("test").unwrap(), "Test").with_step(
+            WorkflowStep::new(
                 "chat",
                 WorkflowStepType::ChatCompletion(ChatCompletionStep::new(
                     "gpt-4",
                     "nonexistent-prompt",
-                    "Hello",
                 )),
-            ));
+            ),
+        );
 
         let result = executor.execute(&workflow, json!({})).await;
 

@@ -20,15 +20,11 @@ use api::state::AppState;
 use domain::{
     api_key::ApiKeyPermissions,
     config::ExecutionLog,
-    credentials::{CredentialId, StoredCredential},
-    knowledge_base::{EmbeddingConfig, KnowledgeBase, KnowledgeBaseId, KnowledgeBaseType},
+    credentials::StoredCredential,
+    knowledge_base::KnowledgeBase,
     team::Team,
-    workflow::{
-        ChatCompletionStep, Condition, ConditionalAction, ConditionalStep, ConditionOperator,
-        CragScoringStep, KnowledgeBaseSearchStep, Workflow, WorkflowId, WorkflowStep,
-        WorkflowStepType,
-    },
-    CredentialType, Model, ModelId, Prompt, PromptId,
+    workflow::Workflow,
+    Model, Prompt,
 };
 use infrastructure::{
     api_key::{ApiKeyGenerator, ApiKeyService, InMemoryApiKeyRepository, StorageApiKeyRepository},
@@ -96,6 +92,14 @@ pub async fn create_app_state_with_config(config: &AppConfig) -> anyhow::Result<
 
     info!("Storage backend: {:?}", storage_backend);
 
+    // Warn if using in-memory storage in production - this should only happen in tests
+    if !use_postgres {
+        tracing::warn!(
+            "Using in-memory storage. This should only be used for testing. \
+             Set APP__STORAGE__BACKEND=postgres for production."
+        );
+    }
+
     // PostgreSQL connection - required for user persistence and optionally for all storage
     let database_url = std::env::var("DATABASE_URL")
         .map_err(|_| anyhow::anyhow!("DATABASE_URL environment variable is required"))?;
@@ -125,8 +129,8 @@ pub async fn create_app_state_with_config(config: &AppConfig) -> anyhow::Result<
         )
     } else {
         info!("Using in-memory storage for entities");
-        let model_storage = Arc::new(InMemoryStorage::<Model>::with_entities(default_models()));
-        let prompt_storage = Arc::new(InMemoryStorage::<Prompt>::with_entities(default_prompts()));
+        let model_storage = Arc::new(InMemoryStorage::<Model>::new());
+        let prompt_storage = Arc::new(InMemoryStorage::<Prompt>::new());
         (
             Arc::new(ModelService::new(model_storage)),
             Arc::new(PromptService::new(prompt_storage)),
@@ -149,11 +153,9 @@ pub async fn create_app_state_with_config(config: &AppConfig) -> anyhow::Result<
         )
     } else {
         (
-            Arc::new(InMemoryStorage::<Workflow>::with_entities(default_workflows())),
+            Arc::new(InMemoryStorage::<Workflow>::new()),
             Arc::new(InMemoryStorage::<Team>::new()),
-            Arc::new(InMemoryStorage::<KnowledgeBase>::with_entities(
-                default_knowledge_bases(),
-            )),
+            Arc::new(InMemoryStorage::<KnowledgeBase>::new()),
         )
     };
 
@@ -161,14 +163,14 @@ pub async fn create_app_state_with_config(config: &AppConfig) -> anyhow::Result<
     let model_storage_for_kb: Arc<dyn StorageTrait<Model>> = if use_postgres {
         StorageFactory::create_postgres_with_pool::<Model>(pg_pool.clone(), "models")
     } else {
-        Arc::new(InMemoryStorage::<Model>::with_entities(default_models()))
+        Arc::new(InMemoryStorage::<Model>::new())
     };
 
     // Prompt storage for workflow executor (needs concrete type)
     let prompt_storage_for_workflow: Arc<dyn StorageTrait<Prompt>> = if use_postgres {
         StorageFactory::create_postgres_with_pool::<Prompt>(pg_pool.clone(), "prompts")
     } else {
-        Arc::new(InMemoryStorage::<Prompt>::with_entities(default_prompts()))
+        Arc::new(InMemoryStorage::<Prompt>::new())
     };
 
     // Credential service - needed for provider resolution
@@ -187,7 +189,7 @@ pub async fn create_app_state_with_config(config: &AppConfig) -> anyhow::Result<
         (service.clone(), service)
     } else {
         let service = Arc::new(CredentialService::new(Arc::new(
-            InMemoryStoredCredentialRepository::with_credentials(default_credentials()),
+            InMemoryStoredCredentialRepository::new(),
         )));
         (service.clone(), service)
     };
@@ -628,10 +630,26 @@ async fn create_initial_admin_user(
 }
 
 // ============================================================================
-// Default Entities
+// Default Entities - TEST ONLY
+// ============================================================================
+// These functions provide default entities for testing purposes only.
+// They are NOT used in production code. In production, all entities
+// must be created via the admin API or seeded through migrations.
 // ============================================================================
 
-fn default_models() -> Vec<Model> {
+#[cfg(test)]
+use domain::{
+    credentials::CredentialId,
+    knowledge_base::{EmbeddingConfig, KnowledgeBaseId, KnowledgeBaseType},
+    workflow::{
+        ChatCompletionStep, Condition, ConditionalAction, ConditionalStep, ConditionOperator,
+        CragScoringStep, KnowledgeBaseSearchStep, WorkflowId, WorkflowStep, WorkflowStepType,
+    },
+    CredentialType, ModelId, PromptId,
+};
+
+#[cfg(test)]
+pub(crate) fn default_models() -> Vec<Model> {
     vec![
         Model::new(
             ModelId::new("gpt-4").unwrap(),
@@ -671,7 +689,8 @@ fn default_models() -> Vec<Model> {
     ]
 }
 
-fn default_prompts() -> Vec<Prompt> {
+#[cfg(test)]
+pub(crate) fn default_prompts() -> Vec<Prompt> {
     vec![
         Prompt::new(
             PromptId::new("system-assistant").unwrap(),
@@ -697,8 +716,19 @@ fn default_prompts() -> Vec<Prompt> {
         Prompt::new(
             PromptId::new("crag-relevance-scorer").unwrap(),
             "CRAG Relevance Scorer",
-            "Rate the relevance of the following document to the query on a scale of 0-10. \
-             Query: ${var:query}\n\nDocument: ${var:document}\n\nRespond with only a number.",
+            "You are a document relevance scorer. Your task is to evaluate how relevant each document is to the given query.\n\n\
+             Scoring guide:\n\
+             - 0.00: Not relevant at all\n\
+             - 0.25: Some minor parts may be relevant\n\
+             - 0.50: Moderately relevant\n\
+             - 0.75: Mostly relevant\n\
+             - 1.00: Completely relevant\n\n\
+             Use any value between 0.00 and 1.00 with two decimal places.\n\n\
+             IMPORTANT: Respond with a JSON object containing a \"scores\" array. \
+             Each item in the array must have an \"id\" (the document ID) and a \"score\" (the relevance score).\n\n\
+             Example response format:\n\
+             {\"scores\": [{\"id\": \"doc-1\", \"score\": 0.85}, {\"id\": \"doc-2\", \"score\": 0.42}]}\n\n\
+             Query: ${var:query}\n\nDocuments:\n${var:document}",
         ),
         Prompt::new(
             PromptId::new("crag-knowledge-refiner").unwrap(),
@@ -769,7 +799,8 @@ fn default_prompts() -> Vec<Prompt> {
     ]
 }
 
-fn default_credentials() -> Vec<StoredCredential> {
+#[cfg(test)]
+pub(crate) fn default_credentials() -> Vec<StoredCredential> {
     vec![
         StoredCredential::new(
             CredentialId::new("openai-default").unwrap(),
@@ -793,7 +824,8 @@ fn default_credentials() -> Vec<StoredCredential> {
     ]
 }
 
-fn default_knowledge_bases() -> Vec<KnowledgeBase> {
+#[cfg(test)]
+pub(crate) fn default_knowledge_bases() -> Vec<KnowledgeBase> {
     use std::collections::HashMap;
 
     let mut connection_config = HashMap::new();
@@ -811,7 +843,8 @@ fn default_knowledge_bases() -> Vec<KnowledgeBase> {
     .with_connection_config(connection_config)]
 }
 
-fn default_workflows() -> Vec<Workflow> {
+#[cfg(test)]
+pub(crate) fn default_workflows() -> Vec<Workflow> {
     use domain::workflow::ScoringStrategy;
 
     // Common input schemas
@@ -879,7 +912,9 @@ fn default_workflows() -> Vec<Workflow> {
             .with_step(WorkflowStep::new(
                 "generate",
                 WorkflowStepType::ChatCompletion(
-                    ChatCompletionStep::new("gpt-4", "rag-system", "${input.query}")
+                    ChatCompletionStep::new("gpt-4", "rag-system")
+                        .with_prompt_variable("query", "${input.query}")
+                        .with_prompt_variable("context", "${step:search:documents}")
                         .with_temperature(0.7)
                         .with_max_tokens(1000),
                 ),
@@ -898,20 +933,25 @@ fn default_workflows() -> Vec<Workflow> {
             .with_step(WorkflowStep::new(
                 "score",
                 WorkflowStepType::CragScoring(
-                    CragScoringStep::new(
-                        "${search.results}",
-                        "${input.query}",
-                        "gpt-4",
-                        "crag-relevance-scorer",
-                    )
-                    .with_threshold(0.7)
-                    .with_strategy(ScoringStrategy::Hybrid),
+                    CragScoringStep::new("gpt-4", "crag-relevance-scorer")
+                        .with_documents_source("${step:search:documents}")
+                        .with_threshold(0.7)
+                        .with_strategy(ScoringStrategy::Hybrid)
+                        .with_prompt_variables({
+                            let mut vars = std::collections::HashMap::new();
+                            // document: XML representation for the prompt
+                            vars.insert("document".to_string(), "${step:search:documents_xml}".to_string());
+                            vars.insert("query".to_string(), "${input.query}".to_string());
+                            vars
+                        }),
                 ),
             ))
             .with_step(WorkflowStep::new(
                 "answer",
                 WorkflowStepType::ChatCompletion(
-                    ChatCompletionStep::new("gpt-4", "crag-final-answer", "${input.query}")
+                    ChatCompletionStep::new("gpt-4", "crag-final-answer")
+                        .with_prompt_variable("query", "${input.query}")
+                        .with_prompt_variable("documents", "${step:score:relevant_documents}")
                         .with_temperature(0.7)
                         .with_max_tokens(1500),
                 ),
@@ -923,7 +963,8 @@ fn default_workflows() -> Vec<Workflow> {
             .with_step(WorkflowStep::new(
                 "classify",
                 WorkflowStepType::ChatCompletion(
-                    ChatCompletionStep::new("gpt-3.5-turbo", "classification-prompt", "${input.query}")
+                    ChatCompletionStep::new("gpt-3.5-turbo", "classification-prompt")
+                        .with_prompt_variable("query", "${input.query}")
                         .with_temperature(0.1)
                         .with_max_tokens(50),
                 ),
@@ -943,7 +984,8 @@ fn default_workflows() -> Vec<Workflow> {
             .with_step(WorkflowStep::new(
                 "simple_answer",
                 WorkflowStepType::ChatCompletion(
-                    ChatCompletionStep::new("gpt-3.5-turbo", "system-assistant", "${input.query}")
+                    ChatCompletionStep::new("gpt-3.5-turbo", "system-assistant")
+                        .with_prompt_variable("query", "${input.query}")
                         .with_temperature(0.7)
                         .with_max_tokens(500),
                 ),
@@ -951,7 +993,8 @@ fn default_workflows() -> Vec<Workflow> {
             .with_step(WorkflowStep::new(
                 "complex_answer",
                 WorkflowStepType::ChatCompletion(
-                    ChatCompletionStep::new("gpt-4", "chain-of-thought", "${input.query}")
+                    ChatCompletionStep::new("gpt-4", "chain-of-thought")
+                        .with_prompt_variable("query", "${input.query}")
                         .with_temperature(0.7)
                         .with_max_tokens(2000),
                 ),
@@ -963,7 +1006,8 @@ fn default_workflows() -> Vec<Workflow> {
             .with_step(WorkflowStep::new(
                 "analyze",
                 WorkflowStepType::ChatCompletion(
-                    ChatCompletionStep::new("gpt-3.5-turbo", "sentiment-analyzer", "${input.text}")
+                    ChatCompletionStep::new("gpt-3.5-turbo", "sentiment-analyzer")
+                        .with_prompt_variable("text", "${input.text}")
                         .with_temperature(0.1)
                         .with_max_tokens(50),
                 ),
@@ -975,7 +1019,8 @@ fn default_workflows() -> Vec<Workflow> {
             .with_step(WorkflowStep::new(
                 "extract",
                 WorkflowStepType::ChatCompletion(
-                    ChatCompletionStep::new("gpt-4", "entity-extractor", "${input.text}")
+                    ChatCompletionStep::new("gpt-4", "entity-extractor")
+                        .with_prompt_variable("text", "${input.text}")
                         .with_temperature(0.1)
                         .with_max_tokens(1000),
                 ),
@@ -987,7 +1032,8 @@ fn default_workflows() -> Vec<Workflow> {
             .with_step(WorkflowStep::new(
                 "summarize",
                 WorkflowStepType::ChatCompletion(
-                    ChatCompletionStep::new("gpt-4", "summarizer", "${input.document}")
+                    ChatCompletionStep::new("gpt-4", "summarizer")
+                        .with_prompt_variable("document", "${input.document}")
                         .with_temperature(0.5)
                         .with_max_tokens(500),
                 ),
@@ -995,7 +1041,8 @@ fn default_workflows() -> Vec<Workflow> {
             .with_step(WorkflowStep::new(
                 "extract_entities",
                 WorkflowStepType::ChatCompletion(
-                    ChatCompletionStep::new("gpt-4", "entity-extractor", "${input.document}")
+                    ChatCompletionStep::new("gpt-4", "entity-extractor")
+                        .with_prompt_variable("text", "${input.document}")
                         .with_temperature(0.1)
                         .with_max_tokens(1000),
                 ),
@@ -1003,7 +1050,8 @@ fn default_workflows() -> Vec<Workflow> {
             .with_step(WorkflowStep::new(
                 "generate_qa",
                 WorkflowStepType::ChatCompletion(
-                    ChatCompletionStep::new("gpt-4", "qa-generator", "${summarize.response}")
+                    ChatCompletionStep::new("gpt-4", "qa-generator")
+                        .with_prompt_variable("summary", "${step:summarize:response}")
                         .with_temperature(0.7)
                         .with_max_tokens(1500),
                 ),
@@ -1015,7 +1063,9 @@ fn default_workflows() -> Vec<Workflow> {
             .with_step(WorkflowStep::new(
                 "translate",
                 WorkflowStepType::ChatCompletion(
-                    ChatCompletionStep::new("gpt-4", "translator", "${input.text}")
+                    ChatCompletionStep::new("gpt-4", "translator")
+                        .with_prompt_variable("text", "${input.text}")
+                        .with_prompt_variable("target_language", "${input.target_language}")
                         .with_temperature(0.3)
                         .with_max_tokens(2000),
                 ),

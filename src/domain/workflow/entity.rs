@@ -424,15 +424,12 @@ mod tests {
         let workflow = Workflow::new(id, "Multi-Step")
             .with_step(WorkflowStep::new(
                 "step1",
-                WorkflowStepType::ChatCompletion(
-                    ChatCompletionStep::new("gpt-4", "sys-prompt", "Hello")
-                ),
+                WorkflowStepType::ChatCompletion(ChatCompletionStep::new("gpt-4", "sys-prompt")),
             ))
             .with_step(WorkflowStep::new(
                 "step2",
                 WorkflowStepType::Conditional(
-                    ConditionalStep::new(vec![])
-                        .with_default_action(ConditionalAction::Continue)
+                    ConditionalStep::new(vec![]).with_default_action(ConditionalAction::Continue),
                 ),
             ));
 
@@ -448,7 +445,7 @@ mod tests {
     fn test_workflow_step_builder() {
         let step = WorkflowStep::new(
             "my-step",
-            WorkflowStepType::ChatCompletion(ChatCompletionStep::new("gpt-4", "sys-prompt", "test")),
+            WorkflowStepType::ChatCompletion(ChatCompletionStep::new("gpt-4", "sys-prompt")),
         )
         .with_on_error(OnErrorAction::SkipStep)
         .with_timeout_ms(30000);
@@ -479,7 +476,7 @@ mod tests {
 
         workflow.set_steps(vec![WorkflowStep::new(
             "new-step",
-            WorkflowStepType::ChatCompletion(ChatCompletionStep::new("gpt-4", "sys-prompt", "test")),
+            WorkflowStepType::ChatCompletion(ChatCompletionStep::new("gpt-4", "sys-prompt")),
         )]);
 
         assert_eq!(workflow.version(), 2);
@@ -492,7 +489,7 @@ mod tests {
             .with_description("Test description")
             .with_step(WorkflowStep::new(
                 "chat",
-                WorkflowStepType::ChatCompletion(ChatCompletionStep::new("gpt-4", "sys-prompt", "Hello")),
+                WorkflowStepType::ChatCompletion(ChatCompletionStep::new("gpt-4", "sys-prompt")),
             ));
 
         let json = serde_json::to_string_pretty(&workflow).unwrap();

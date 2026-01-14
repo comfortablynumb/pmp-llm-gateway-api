@@ -54,7 +54,10 @@ pub use operation::{
     validate_operation_id, Operation, OperationError, OperationId, OperationRepository,
     OperationStatus, OperationType,
 };
-pub use prompt::{Prompt, PromptId, PromptTemplate, PromptVariable, PromptVersion, TemplateError};
+pub use prompt::{
+    Prompt, PromptId, PromptOutputSchema, PromptTemplate, PromptVariable, PromptVersion,
+    TemplateError,
+};
 pub use cache::{Cache, CacheExt, CacheKey, CacheKeyGenerator, CacheKeyParams, DefaultKeyGenerator};
 pub use knowledge_base::{
     AddDocumentsResult, DeleteDocumentsResult, Document, EmbeddingConfig, FilterBuilder,

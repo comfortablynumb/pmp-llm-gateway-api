@@ -620,7 +620,7 @@ const Workflows = (function() {
 
             <!-- Step Modal -->
             <div id="step-modal" class="modal-backdrop hidden">
-                <div class="modal-content max-w-lg">
+                <div class="modal-content max-w-2xl">
                     <div id="step-modal-content"></div>
                 </div>
             </div>
@@ -707,10 +707,12 @@ const Workflows = (function() {
      */
     function renderVariablePicker(targetFieldId) {
         return `
-            <button type="button" class="variable-picker-btn ml-2 px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 rounded border"
-                data-target="${targetFieldId}" title="Insert variable">
-                <span class="font-mono">\${...}</span>
-            </button>
+            <div class="variable-picker-wrapper relative inline-block">
+                <button type="button" class="variable-picker-btn ml-2 px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 rounded border"
+                    data-target="${targetFieldId}" title="Insert variable">
+                    <span class="font-mono">\${...}</span>
+                </button>
+            </div>
         `;
     }
 
@@ -720,7 +722,7 @@ const Workflows = (function() {
     function renderVariablePickerDropdown(targetFieldId) {
         const variables = getAvailableVariables();
         let html = `
-            <div class="variable-picker-dropdown absolute z-50 mt-1 w-80 bg-white border border-gray-300 rounded-lg shadow-lg max-h-64 overflow-y-auto"
+            <div class="variable-picker-dropdown absolute z-50 mt-1 right-0 bg-white border border-gray-300 rounded-lg shadow-lg max-h-72 overflow-y-auto" style="width: 420px;"
                  data-target="${targetFieldId}">
                 <div class="p-2 border-b bg-gray-50">
                     <span class="text-xs font-medium text-gray-600">Insert Variable</span>
@@ -865,14 +867,6 @@ const Workflows = (function() {
                     </div>
                     <p class="text-xs text-gray-500 mt-1">Click a variable input, then use the picker above to insert variables</p>
                 </div>
-                <div class="mb-4">
-                    <div class="flex items-center justify-between mb-1">
-                        <label class="text-sm font-medium text-gray-700">User Message *</label>
-                        ${renderVariablePicker('user_message')}
-                    </div>
-                    <textarea name="user_message" rows="3" class="form-input" required
-                        placeholder='\${request:question}'>${Utils.escapeHtml(step?.user_message || '')}</textarea>
-                </div>
                 <div class="grid grid-cols-3 gap-4 mb-4">
                     <div>
                         <label class="block text-sm font-medium text-gray-700 mb-1">Temperature</label>
@@ -953,6 +947,17 @@ const Workflows = (function() {
                     </select>
                     <p class="text-xs text-gray-500 mt-1">Prompt template for relevance scoring</p>
                 </div>
+                <div class="mb-4">
+                    <div class="flex items-center justify-between mb-1">
+                        <label class="text-sm font-medium text-gray-700">Documents *</label>
+                        ${renderVariablePicker('documents_source')}
+                    </div>
+                    <input type="text" name="documents_source" id="documents_source"
+                        value="${Utils.escapeHtml(step?.documents_source || '${step:search:documents}')}"
+                        class="form-input" required
+                        placeholder="\${step:search:documents}">
+                    <p class="text-xs text-gray-500 mt-1">Variable reference to the documents array for filtering. Example: \${step:search:documents}</p>
+                </div>
                 <div id="crag-prompt-variables-section" class="mb-4 hidden">
                     <div class="flex items-center justify-between mb-2">
                         <label class="text-sm font-medium text-gray-700">Prompt Variables</label>
@@ -961,24 +966,7 @@ const Workflows = (function() {
                     <div id="crag-prompt-variables-container" class="space-y-3 p-3 bg-gray-50 rounded border">
                         <!-- Variable inputs will be dynamically inserted here -->
                     </div>
-                    <p class="text-xs text-gray-500 mt-1">Click a variable input, then use the picker above to insert variables</p>
-                </div>
-                <div class="mb-4">
-                    <div class="flex items-center justify-between mb-1">
-                        <label class="text-sm font-medium text-gray-700">Documents Source *</label>
-                        ${renderVariablePicker('documents_source')}
-                    </div>
-                    <input type="text" name="documents_source" value="${Utils.escapeHtml(step?.documents_source || '')}"
-                        class="form-input" placeholder='\${step:search:documents}' required>
-                    <p class="text-xs text-gray-500 mt-1">Reference to documents from a previous KB Search step</p>
-                </div>
-                <div class="mb-4">
-                    <div class="flex items-center justify-between mb-1">
-                        <label class="text-sm font-medium text-gray-700">Query *</label>
-                        ${renderVariablePicker('crag_query')}
-                    </div>
-                    <textarea name="query" id="crag_query" rows="2" class="form-input" required
-                        placeholder='\${request:question}'>${Utils.escapeHtml(step?.query || '')}</textarea>
+                    <p class="text-xs text-gray-500 mt-1">Click a variable input, then use the picker above to insert variables.</p>
                 </div>
                 <div class="mb-4">
                     <label class="block text-sm font-medium text-gray-700 mb-1">Threshold</label>
@@ -1255,10 +1243,18 @@ const Workflows = (function() {
 
         $('body').append(modalHtml);
 
-        $('#clone-cancel-btn').on('click', () => $('#clone-modal').remove());
+        const closeCloneModal = () => {
+            $('#clone-modal').remove();
+            $(document).off('keydown.cloneModalEsc');
+        };
 
-        $('#clone-modal').on('click', function(e) {
-            if (e.target === this) $(this).remove();
+        $('#clone-cancel-btn').on('click', closeCloneModal);
+
+        // ESC key to close modal
+        $(document).on('keydown.cloneModalEsc', function(e) {
+            if (e.key === 'Escape') {
+                closeCloneModal();
+            }
         });
 
         $('#clone-form').on('submit', async function(e) {
@@ -1278,7 +1274,7 @@ const Workflows = (function() {
             try {
                 await API.cloneWorkflow(workflowId, { new_id: newId, new_name: newName });
                 Utils.showToast('Workflow cloned successfully', 'success');
-                $('#clone-modal').remove();
+                closeCloneModal();
                 render();
             } catch (error) {
                 Utils.showToast(error.message, 'error');
@@ -1798,13 +1794,15 @@ const Workflows = (function() {
 
         for (const variable of variables) {
             const existingValue = existingVarsMap[variable.name] || variable.defaultValue || '';
+            const defaultHint = variable.defaultValue ? `Default: ${Utils.escapeHtml(variable.defaultValue)}` : '';
             html += `
-                <div class="flex items-center gap-2">
-                    <label class="w-32 text-sm font-medium text-gray-600 shrink-0">\${var:${Utils.escapeHtml(variable.name)}}</label>
+                <div class="mb-3">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">\${var:${Utils.escapeHtml(variable.name)}}</label>
                     <input type="text" name="crag_prompt_var_${Utils.escapeHtml(variable.name)}"
                         value="${Utils.escapeHtml(existingValue)}"
-                        class="form-input flex-1 text-sm"
+                        class="form-input w-full text-sm"
                         placeholder="\${request:field} or \${step:name:field}">
+                    ${defaultHint ? `<p class="text-xs text-gray-500 mt-1">${defaultHint}</p>` : ''}
                 </div>
             `;
         }
@@ -1891,13 +1889,15 @@ const Workflows = (function() {
 
         for (const variable of variables) {
             const existingValue = existingVarsMap[variable.name] || variable.defaultValue || '';
+            const defaultHint = variable.defaultValue ? `Default: ${Utils.escapeHtml(variable.defaultValue)}` : '';
             html += `
-                <div class="flex items-center gap-2">
-                    <label class="w-32 text-sm font-medium text-gray-600 shrink-0">\${var:${Utils.escapeHtml(variable.name)}}</label>
+                <div class="mb-3">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">\${var:${Utils.escapeHtml(variable.name)}}</label>
                     <input type="text" name="prompt_var_${Utils.escapeHtml(variable.name)}"
                         value="${Utils.escapeHtml(existingValue)}"
-                        class="form-input flex-1 text-sm"
+                        class="form-input w-full text-sm"
                         placeholder="\${request:field} or \${step:name:field}">
+                    ${defaultHint ? `<p class="text-xs text-gray-500 mt-1">${defaultHint}</p>` : ''}
                 </div>
             `;
         }
@@ -1931,7 +1931,13 @@ const Workflows = (function() {
         $(document).off('focus', '[name^="prompt_var_"], [name^="crag_prompt_var_"]');
         $(document).off('input', '[name^="prompt_var_"]');
         $(document).off('input', '[name^="crag_prompt_var_"]');
+        $(document).off('keydown.modalEsc');
         $('.variable-picker-dropdown').remove();
+    }
+
+    function hideCloneModal() {
+        $('#clone-modal').remove();
+        $(document).off('keydown.modalEsc');
     }
 
     // Track currently focused field for prompt variable picker
@@ -1940,8 +1946,11 @@ const Workflows = (function() {
     function bindStepModalEvents(stepType) {
         $('#modal-cancel-btn').on('click', hideStepModal);
 
-        $('#step-modal').on('click', function(e) {
-            if (e.target === this) hideStepModal();
+        // ESC key to close modal
+        $(document).on('keydown.modalEsc', function(e) {
+            if (e.key === 'Escape') {
+                hideStepModal();
+            }
         });
 
         // Handle variable picker button clicks
@@ -1962,9 +1971,9 @@ const Workflows = (function() {
                 actualTargetId = lastFocusedPromptVar;
             }
 
-            // Create and position the dropdown
+            // Create and position the dropdown below the button
             const dropdown = renderVariablePickerDropdown(actualTargetId);
-            $btn.parent().css('position', 'relative').append(dropdown);
+            $btn.closest('.variable-picker-wrapper').append(dropdown);
 
             // Bind insert handlers
             $('.var-insert-btn').on('click', function(e) {
@@ -2066,7 +2075,6 @@ const Workflows = (function() {
         if (stepType === 'chat_completion') {
             step.model_id = $('[name="model_id"]').val().trim();
             step.prompt_id = $('[name="prompt_id"]').val().trim();
-            step.user_message = $('[name="user_message"]').val();
 
             // Parse prompt variables from the hidden JSON field
             try {
@@ -2112,8 +2120,7 @@ const Workflows = (function() {
         } else if (stepType === 'crag_scoring') {
             step.model_id = $('[name="model_id"]').val().trim();
             step.prompt_id = $('[name="prompt_id"]').val().trim();
-            step.documents_source = $('[name="documents_source"]').val().trim();
-            step.query = $('[name="query"]').val();
+            step.documents_source = $('[name="documents_source"]').val().trim() || '${step:search:documents}';
 
             // Parse prompt variables from the hidden JSON field
             try {

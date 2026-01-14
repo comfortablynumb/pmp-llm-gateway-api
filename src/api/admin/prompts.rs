@@ -8,8 +8,37 @@ use tracing::debug;
 use crate::api::middleware::RequireAdmin;
 use crate::api::state::AppState;
 use crate::api::types::{ApiError, Json};
-use crate::domain::prompt::{Prompt, PromptVersion};
+use crate::domain::prompt::{Prompt, PromptOutputSchema, PromptVersion};
 use crate::infrastructure::services::{CreatePromptRequest, UpdatePromptRequest};
+
+/// Output schema for API requests/responses
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OutputSchemaApi {
+    pub name: String,
+    #[serde(default)]
+    pub strict: bool,
+    pub schema: serde_json::Value,
+}
+
+impl From<&PromptOutputSchema> for OutputSchemaApi {
+    fn from(s: &PromptOutputSchema) -> Self {
+        Self {
+            name: s.name.clone(),
+            strict: s.strict,
+            schema: s.schema.clone(),
+        }
+    }
+}
+
+impl From<OutputSchemaApi> for PromptOutputSchema {
+    fn from(s: OutputSchemaApi) -> Self {
+        PromptOutputSchema {
+            name: s.name,
+            strict: s.strict,
+            schema: s.schema,
+        }
+    }
+}
 
 /// Request to create a new prompt
 #[derive(Debug, Clone, Deserialize)]
@@ -21,6 +50,8 @@ pub struct CreatePromptApiRequest {
     pub description: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default)]
+    pub output_schema: Option<OutputSchemaApi>,
 }
 
 /// Request to update a prompt
@@ -30,6 +61,7 @@ pub struct UpdatePromptApiRequest {
     pub content: Option<String>,
     pub description: Option<String>,
     pub tags: Option<Vec<String>>,
+    pub output_schema: Option<OutputSchemaApi>,
 }
 
 /// Request to render a prompt
@@ -47,6 +79,8 @@ pub struct PromptResponse {
     pub content: String,
     pub description: Option<String>,
     pub tags: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<OutputSchemaApi>,
     pub version: u32,
     pub enabled: bool,
     pub created_at: String,
@@ -61,6 +95,7 @@ impl From<&Prompt> for PromptResponse {
             content: prompt.content().to_string(),
             description: prompt.description().map(String::from),
             tags: prompt.tags().to_vec(),
+            output_schema: prompt.output_schema().map(OutputSchemaApi::from),
             version: prompt.version(),
             enabled: prompt.is_enabled(),
             created_at: prompt.created_at().to_rfc3339(),
@@ -145,6 +180,7 @@ pub async fn create_prompt(
         tags: request.tags,
         enabled: true,
         max_history: None,
+        output_schema: request.output_schema.map(Into::into),
     };
 
     let prompt = state
@@ -190,6 +226,7 @@ pub async fn update_prompt(
         content_message: None,
         tags: request.tags,
         enabled: None,
+        output_schema: request.output_schema.map(Into::into),
     };
 
     let prompt = state

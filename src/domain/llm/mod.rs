@@ -8,7 +8,7 @@ mod response;
 
 pub use message::{ContentPart, Message, MessageRole};
 pub use provider::{LlmProvider, LlmStream};
-pub use provider_resolver::{ProviderResolver, StaticProviderResolver};
+pub use provider_resolver::{ProviderResolver, ResolvedModel, StaticProviderResolver};
 pub use request::{LlmJsonSchema, LlmRequest, LlmRequestBuilder, LlmResponseFormat};
 pub use response::{FinishReason, LlmResponse, StreamChunk, Usage};
 

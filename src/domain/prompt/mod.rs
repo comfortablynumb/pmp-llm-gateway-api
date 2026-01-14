@@ -3,5 +3,5 @@
 mod entity;
 mod template;
 
-pub use entity::{Prompt, PromptId, PromptVersion};
+pub use entity::{Prompt, PromptId, PromptOutputSchema, PromptVersion};
 pub use template::{PromptTemplate, PromptVariable, TemplateError};

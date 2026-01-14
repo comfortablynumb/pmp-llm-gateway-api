@@ -152,8 +152,8 @@ const ExternalApisView = (function() {
             confirmDelete(id);
         });
 
-        // Modal events
-        $('#external-api-modal .close-modal, #external-api-modal .modal-backdrop').on('click', hideModal);
+        // Modal events (only close via close button, not backdrop click)
+        $('#external-api-modal .close-modal').on('click', hideModal);
         $('#external-api-form').on('submit', handleFormSubmit);
         $('#add-header-btn').on('click', addHeaderRow);
 

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tracing::{debug, warn};
 
 use crate::api::state::{CredentialServiceTrait, ModelServiceTrait};
-use crate::domain::llm::{LlmProvider, ProviderResolver};
+use crate::domain::llm::{LlmProvider, ProviderResolver, ResolvedModel};
 use crate::domain::DomainError;
 use crate::infrastructure::plugin::ProviderRouter;
 
@@ -125,6 +125,101 @@ impl ProviderResolver for RoutingProviderResolver {
                     "Failed to get provider from router, using fallback"
                 );
                 Ok(self.fallback_provider.clone())
+            }
+        }
+    }
+
+    async fn resolve_with_model(&self, model_id: &str) -> Result<ResolvedModel, DomainError> {
+        // Try to get the model configuration
+        let model = match self.model_service.get(model_id).await {
+            Ok(Some(model)) => model,
+            Ok(None) => {
+                debug!(model_id = %model_id, "Model not found, using fallback provider");
+                return Ok(ResolvedModel {
+                    provider: self.fallback_provider.clone(),
+                    provider_model: model_id.to_string(),
+                });
+            }
+            Err(e) => {
+                warn!(model_id = %model_id, error = %e, "Failed to get model, using fallback provider");
+                return Ok(ResolvedModel {
+                    provider: self.fallback_provider.clone(),
+                    provider_model: model_id.to_string(),
+                });
+            }
+        };
+
+        // Get the provider_model from the model entity
+        let provider_model = model.provider_model().to_string();
+
+        // Get the credential for this model
+        let credential_id = model.credential_id();
+        let stored_credential = match self.credential_service.get(credential_id).await {
+            Ok(Some(cred)) => cred,
+            Ok(None) => {
+                warn!(
+                    model_id = %model_id,
+                    credential_id = %credential_id,
+                    "Credential not found, using fallback provider"
+                );
+                return Ok(ResolvedModel {
+                    provider: self.fallback_provider.clone(),
+                    provider_model,
+                });
+            }
+            Err(e) => {
+                warn!(
+                    model_id = %model_id,
+                    credential_id = %credential_id,
+                    error = %e,
+                    "Failed to get credential, using fallback provider"
+                );
+                return Ok(ResolvedModel {
+                    provider: self.fallback_provider.clone(),
+                    provider_model,
+                });
+            }
+        };
+
+        // Check if credential is enabled
+        if !stored_credential.is_enabled() {
+            warn!(
+                model_id = %model_id,
+                credential_id = %credential_id,
+                "Credential is disabled, using fallback provider"
+            );
+            return Ok(ResolvedModel {
+                provider: self.fallback_provider.clone(),
+                provider_model,
+            });
+        }
+
+        // Convert to domain Credential and use router
+        let credential = stored_credential.to_credential();
+
+        match self.provider_router.get_provider(&model, &credential).await {
+            Ok(provider) => {
+                debug!(
+                    model_id = %model_id,
+                    credential_id = %credential_id,
+                    provider_model = %provider_model,
+                    "Using provider from router with provider_model"
+                );
+                Ok(ResolvedModel {
+                    provider,
+                    provider_model,
+                })
+            }
+            Err(e) => {
+                warn!(
+                    model_id = %model_id,
+                    error = %e,
+                    "Failed to get provider from router, using fallback"
+                );
+                Ok(ResolvedModel {
+                    provider: self.fallback_provider.clone(),
+                    provider_model,
+                })
             }
         }
     }

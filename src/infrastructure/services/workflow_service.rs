@@ -319,10 +319,6 @@ impl WorkflowService {
                         "ChatCompletion step prompt_id must be configured directly, not as input variable",
                     ));
                 }
-
-                if chat_step.user_message.is_empty() {
-                    return Err(DomainError::validation("ChatCompletion step requires user_message"));
-                }
             }
             WorkflowStepType::KnowledgeBaseSearch(kb_step) => {
                 if kb_step.knowledge_base_id.is_empty() {
@@ -343,16 +339,6 @@ impl WorkflowService {
                 }
             }
             WorkflowStepType::CragScoring(crag_step) => {
-                if crag_step.input_documents.is_empty() {
-                    return Err(DomainError::validation(
-                        "CragScoring step requires input_documents",
-                    ));
-                }
-
-                if crag_step.query.is_empty() {
-                    return Err(DomainError::validation("CragScoring step requires query"));
-                }
-
                 if crag_step.model_id.is_empty() {
                     return Err(DomainError::validation("CragScoring step requires model_id"));
                 }
@@ -464,11 +450,7 @@ mod tests {
     fn create_chat_step(name: &str) -> WorkflowStep {
         WorkflowStep::new(
             name,
-            WorkflowStepType::ChatCompletion(ChatCompletionStep::new(
-                "gpt-4",
-                "system-prompt",
-                "Hello",
-            )),
+            WorkflowStepType::ChatCompletion(ChatCompletionStep::new("gpt-4", "system-prompt")),
         )
     }
 
@@ -655,7 +637,7 @@ mod tests {
         // Missing model_id
         let step = WorkflowStep::new(
             "test",
-            WorkflowStepType::ChatCompletion(ChatCompletionStep::new("", "sys-prompt", "Hello")),
+            WorkflowStepType::ChatCompletion(ChatCompletionStep::new("", "sys-prompt")),
         );
         let request = CreateWorkflowRequest::new("test", "Test").with_step(step);
         let result = service.create(request).await;
@@ -665,22 +647,12 @@ mod tests {
         // Missing prompt_id
         let step = WorkflowStep::new(
             "test",
-            WorkflowStepType::ChatCompletion(ChatCompletionStep::new("gpt-4", "", "Hello")),
+            WorkflowStepType::ChatCompletion(ChatCompletionStep::new("gpt-4", "")),
         );
         let request = CreateWorkflowRequest::new("test2", "Test").with_step(step);
         let result = service.create(request).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("requires prompt_id"));
-
-        // Missing user_message
-        let step = WorkflowStep::new(
-            "test",
-            WorkflowStepType::ChatCompletion(ChatCompletionStep::new("gpt-4", "sys-prompt", "")),
-        );
-        let request = CreateWorkflowRequest::new("test3", "Test").with_step(step);
-        let result = service.create(request).await;
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("requires user_message"));
     }
 
     #[tokio::test]
@@ -730,7 +702,6 @@ mod tests {
             WorkflowStepType::ChatCompletion(ChatCompletionStep::new(
                 "${request:model}",
                 "prompt-id",
-                "Hello",
             )),
         );
         let request = CreateWorkflowRequest::new("test2", "Test").with_step(step);
@@ -747,7 +718,6 @@ mod tests {
             WorkflowStepType::ChatCompletion(ChatCompletionStep::new(
                 "gpt-4o",
                 "${request:prompt}",
-                "Hello",
             )),
         );
         let request = CreateWorkflowRequest::new("test3", "Test").with_step(step);
@@ -766,7 +736,7 @@ mod tests {
         let service = WorkflowService::new(storage, executor);
 
         // Missing model_id
-        let step = CragScoringStep::new("${step:search:docs}", "query", "", "crag-prompt");
+        let step = CragScoringStep::new("", "crag-prompt");
         let request = CreateWorkflowRequest::new("test", "Test")
             .with_step(WorkflowStep::new("test", WorkflowStepType::CragScoring(step)));
         let result = service.create(request).await;
@@ -774,7 +744,7 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("requires model_id"));
 
         // Missing prompt_id
-        let step = CragScoringStep::new("${step:search:docs}", "query", "gpt-4o", "");
+        let step = CragScoringStep::new("gpt-4o", "");
         let request = CreateWorkflowRequest::new("test2", "Test")
             .with_step(WorkflowStep::new("test", WorkflowStepType::CragScoring(step)));
         let result = service.create(request).await;
@@ -782,7 +752,7 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("requires prompt_id"));
 
         // Invalid threshold
-        let mut step = CragScoringStep::new("${step:search:docs}", "query", "gpt-4o", "crag-prompt");
+        let mut step = CragScoringStep::new("gpt-4o", "crag-prompt");
         step.threshold = 1.5; // Invalid
         let request = CreateWorkflowRequest::new("test3", "Test")
             .with_step(WorkflowStep::new("test", WorkflowStepType::CragScoring(step)));

@@ -145,7 +145,7 @@ pub mod mock {
             Workflow::new(WorkflowId::new(id).unwrap(), format!("Test {}", id)).with_step(
                 WorkflowStep::new(
                     "step1",
-                    WorkflowStepType::ChatCompletion(ChatCompletionStep::new("gpt-4", "sys-prompt", "test")),
+                    WorkflowStepType::ChatCompletion(ChatCompletionStep::new("gpt-4", "sys-prompt")),
                 ),
             )
         }

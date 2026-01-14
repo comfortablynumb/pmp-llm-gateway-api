@@ -391,12 +391,6 @@ const ExecutionLogs = (function() {
 
     function bindModalEvents() {
         $('#close-modal-btn').on('click', () => $('#details-modal').remove());
-
-        $('#details-modal').on('click', function(e) {
-            if (e.target === this) {
-                $(this).remove();
-            }
-        });
     }
 
     async function confirmDelete(id) {
@@ -436,12 +430,6 @@ const ExecutionLogs = (function() {
         $('body').append(modal);
 
         $('#cancel-cleanup-btn').on('click', () => $('#cleanup-modal').remove());
-
-        $('#cleanup-modal').on('click', function(e) {
-            if (e.target === this) {
-                $(this).remove();
-            }
-        });
 
         $('#cleanup-form').on('submit', async function(e) {
             e.preventDefault();

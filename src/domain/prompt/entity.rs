@@ -97,6 +97,34 @@ impl PromptVersion {
     }
 }
 
+/// Structured output schema for prompts
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PromptOutputSchema {
+    /// Name of the output schema
+    pub name: String,
+    /// Whether to enforce strict mode
+    #[serde(default)]
+    pub strict: bool,
+    /// The JSON schema definition
+    pub schema: serde_json::Value,
+}
+
+impl PromptOutputSchema {
+    /// Create a new output schema
+    pub fn new(name: impl Into<String>, schema: serde_json::Value) -> Self {
+        Self {
+            name: name.into(),
+            strict: true,
+            schema,
+        }
+    }
+
+    pub fn with_strict(mut self, strict: bool) -> Self {
+        self.strict = strict;
+        self
+    }
+}
+
 /// Prompt entity representing a reusable prompt template
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Prompt {
@@ -121,6 +149,9 @@ pub struct Prompt {
     /// Tags for categorization
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     tags: Vec<String>,
+    /// Optional structured output schema
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_schema: Option<PromptOutputSchema>,
     /// Creation timestamp
     created_at: DateTime<Utc>,
     /// Last update timestamp
@@ -141,6 +172,7 @@ impl Prompt {
             max_history: 10, // Default to keeping 10 versions
             enabled: true,
             tags: Vec::new(),
+            output_schema: None,
             created_at: now,
             updated_at: now,
         }
@@ -168,6 +200,11 @@ impl Prompt {
 
     pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
         self.tags.push(tag.into());
+        self
+    }
+
+    pub fn with_output_schema(mut self, output_schema: PromptOutputSchema) -> Self {
+        self.output_schema = Some(output_schema);
         self
     }
 
@@ -207,6 +244,10 @@ impl Prompt {
 
     pub fn tags(&self) -> &[String] {
         &self.tags
+    }
+
+    pub fn output_schema(&self) -> Option<&PromptOutputSchema> {
+        self.output_schema.as_ref()
     }
 
     pub fn created_at(&self) -> DateTime<Utc> {
@@ -274,6 +315,11 @@ impl Prompt {
 
     pub fn set_tags(&mut self, tags: Vec<String>) {
         self.tags = tags;
+        self.touch();
+    }
+
+    pub fn set_output_schema(&mut self, output_schema: Option<PromptOutputSchema>) {
+        self.output_schema = output_schema;
         self.touch();
     }
 

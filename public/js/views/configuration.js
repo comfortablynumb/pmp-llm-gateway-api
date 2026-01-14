@@ -174,12 +174,6 @@ const Configuration = (function() {
     function bindModalEvents(key, type) {
         $('#cancel-edit-btn').on('click', () => $('#edit-modal').remove());
 
-        $('#edit-modal').on('click', function(e) {
-            if (e.target === this) {
-                $(this).remove();
-            }
-        });
-
         $('#edit-config-form').on('submit', async function(e) {
             e.preventDefault();
 

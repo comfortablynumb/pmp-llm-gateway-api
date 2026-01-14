@@ -7,6 +7,15 @@ use std::sync::Arc;
 use super::LlmProvider;
 use crate::domain::DomainError;
 
+/// Result of resolving a model, containing both the provider and the actual model name
+#[derive(Debug, Clone)]
+pub struct ResolvedModel {
+    /// The LLM provider instance
+    pub provider: Arc<dyn LlmProvider>,
+    /// The provider-specific model name (e.g., "gpt-4o" instead of just "gpt-4")
+    pub provider_model: String,
+}
+
 /// Trait for resolving model IDs to LLM provider instances.
 ///
 /// This abstraction allows the workflow executor to dynamically
@@ -23,6 +32,23 @@ pub trait ProviderResolver: Send + Sync + Debug {
     /// * `Ok(Arc<dyn LlmProvider>)` - The provider instance for the model
     /// * `Err(DomainError)` - If the model or provider cannot be resolved
     async fn resolve(&self, model_id: &str) -> Result<Arc<dyn LlmProvider>, DomainError>;
+
+    /// Resolve a model ID to both a provider and the provider-specific model name.
+    ///
+    /// # Arguments
+    /// * `model_id` - The model identifier to resolve
+    ///
+    /// # Returns
+    /// * `Ok(ResolvedModel)` - The provider and provider_model name
+    /// * `Err(DomainError)` - If the model or provider cannot be resolved
+    async fn resolve_with_model(&self, model_id: &str) -> Result<ResolvedModel, DomainError> {
+        // Default implementation uses model_id as provider_model
+        let provider = self.resolve(model_id).await?;
+        Ok(ResolvedModel {
+            provider,
+            provider_model: model_id.to_string(),
+        })
+    }
 }
 
 /// A simple provider resolver that always returns the same provider.

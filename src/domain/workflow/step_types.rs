@@ -44,9 +44,6 @@ pub struct ChatCompletionStep {
     /// Prompt ID to use as system message template
     pub prompt_id: String,
 
-    /// User message (can contain variable references)
-    pub user_message: String,
-
     /// Prompt template variables (key -> value, values can contain variable references)
     /// These are passed to the prompt template for rendering
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
@@ -66,15 +63,10 @@ pub struct ChatCompletionStep {
 }
 
 impl ChatCompletionStep {
-    pub fn new(
-        model_id: impl Into<String>,
-        prompt_id: impl Into<String>,
-        user_message: impl Into<String>,
-    ) -> Self {
+    pub fn new(model_id: impl Into<String>, prompt_id: impl Into<String>) -> Self {
         Self {
             model_id: model_id.into(),
             prompt_id: prompt_id.into(),
-            user_message: user_message.into(),
             prompt_variables: std::collections::HashMap::new(),
             temperature: None,
             max_tokens: None,
@@ -171,17 +163,23 @@ impl KnowledgeBaseSearchStep {
 /// CRAG scoring step configuration
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CragScoringStep {
-    /// Reference to input documents (variable reference like ${step:search:documents})
-    pub input_documents: String,
-
-    /// Query for relevance scoring (can contain variable references)
-    pub query: String,
-
     /// Model ID to use for LLM-based scoring
     pub model_id: String,
 
     /// Prompt ID for LLM-based scoring instructions
+    /// The prompt should have variables for rendering (e.g., document, query)
+    /// and must return a "scores" map (doc_id -> score)
     pub prompt_id: String,
+
+    /// Source for documents array to filter.
+    /// Can be a variable reference like "${step:search:documents}" or just "documents".
+    /// Defaults to "documents" which looks for documents in the step output.
+    #[serde(default = "default_documents_source")]
+    pub documents_source: String,
+
+    /// Prompt variables to pass to the scoring prompt
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_variables: Option<std::collections::HashMap<String, String>>,
 
     /// Relevance threshold (0.0 - 1.0)
     #[serde(default = "default_threshold")]
@@ -190,6 +188,10 @@ pub struct CragScoringStep {
     /// Scoring strategy: "threshold", "llm", or "hybrid"
     #[serde(default = "default_strategy")]
     pub strategy: ScoringStrategy,
+}
+
+fn default_documents_source() -> String {
+    "documents".to_string()
 }
 
 fn default_threshold() -> f32 {
@@ -216,20 +218,20 @@ pub enum ScoringStrategy {
 }
 
 impl CragScoringStep {
-    pub fn new(
-        input_documents: impl Into<String>,
-        query: impl Into<String>,
-        model_id: impl Into<String>,
-        prompt_id: impl Into<String>,
-    ) -> Self {
+    pub fn new(model_id: impl Into<String>, prompt_id: impl Into<String>) -> Self {
         Self {
-            input_documents: input_documents.into(),
-            query: query.into(),
             model_id: model_id.into(),
             prompt_id: prompt_id.into(),
+            documents_source: default_documents_source(),
+            prompt_variables: None,
             threshold: default_threshold(),
             strategy: default_strategy(),
         }
+    }
+
+    pub fn with_documents_source(mut self, source: impl Into<String>) -> Self {
+        self.documents_source = source.into();
+        self
     }
 
     pub fn with_threshold(mut self, threshold: f32) -> Self {
@@ -239,6 +241,14 @@ impl CragScoringStep {
 
     pub fn with_strategy(mut self, strategy: ScoringStrategy) -> Self {
         self.strategy = strategy;
+        self
+    }
+
+    pub fn with_prompt_variables(
+        mut self,
+        variables: std::collections::HashMap<String, String>,
+    ) -> Self {
+        self.prompt_variables = Some(variables);
         self
     }
 }
@@ -595,13 +605,17 @@ mod tests {
 
     #[test]
     fn test_chat_completion_step_builder() {
-        let step = ChatCompletionStep::new("gpt-4", "helpful-assistant", "Hello ${request:question}")
+        let step = ChatCompletionStep::new("gpt-4", "helpful-assistant")
+            .with_prompt_variable("question", "${request:question}")
             .with_temperature(0.7)
             .with_max_tokens(1000);
 
         assert_eq!(step.model_id, "gpt-4");
         assert_eq!(step.prompt_id, "helpful-assistant");
-        assert_eq!(step.user_message, "Hello ${request:question}");
+        assert_eq!(
+            step.prompt_variables.get("question"),
+            Some(&"${request:question}".to_string())
+        );
         assert_eq!(step.temperature, Some(0.7));
         assert_eq!(step.max_tokens, Some(1000));
     }
@@ -620,17 +634,10 @@ mod tests {
 
     #[test]
     fn test_crag_scoring_step_builder() {
-        let step = CragScoringStep::new(
-            "${step:search:documents}",
-            "${request:query}",
-            "gpt-4o",
-            "crag-scorer",
-        )
-        .with_threshold(0.6)
-        .with_strategy(ScoringStrategy::Llm);
+        let step = CragScoringStep::new("gpt-4o", "crag-scorer")
+            .with_threshold(0.6)
+            .with_strategy(ScoringStrategy::Llm);
 
-        assert_eq!(step.input_documents, "${step:search:documents}");
-        assert_eq!(step.query, "${request:query}");
         assert_eq!(step.model_id, "gpt-4o");
         assert_eq!(step.prompt_id, "crag-scorer");
         assert_eq!(step.threshold, 0.6);
@@ -701,9 +708,10 @@ mod tests {
 
     #[test]
     fn test_workflow_step_type_serialization() {
-        let step = WorkflowStepType::ChatCompletion(
-            ChatCompletionStep::new("gpt-4", "helpful-assistant", "Hello")
-        );
+        let step = WorkflowStepType::ChatCompletion(ChatCompletionStep::new(
+            "gpt-4",
+            "helpful-assistant",
+        ));
 
         let json = serde_json::to_string(&step).unwrap();
         assert!(json.contains("\"type\":\"chat_completion\""));

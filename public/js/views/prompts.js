@@ -107,6 +107,37 @@ const Prompts = (function() {
                         <p class="text-xs text-gray-500 mt-1">Comma-separated list of tags</p>
                     </div>
 
+                    <!-- Structured Output Schema -->
+                    <div class="mb-4">
+                        <div class="flex items-center justify-between mb-2">
+                            <label class="block text-sm font-medium text-gray-700">Structured Output Schema (Optional)</label>
+                            <label class="flex items-center">
+                                <input type="checkbox" id="enable-output-schema" class="mr-2"
+                                    ${prompt?.output_schema ? 'checked' : ''}>
+                                <span class="text-sm text-gray-600">Enable</span>
+                            </label>
+                        </div>
+                        <div id="output-schema-fields" class="${prompt?.output_schema ? '' : 'hidden'}">
+                            <div class="mb-2">
+                                <label class="block text-xs font-medium text-gray-600 mb-1">Schema Name</label>
+                                <input type="text" name="output_schema_name"
+                                    value="${Utils.escapeHtml(prompt?.output_schema?.name || '')}"
+                                    class="form-input" placeholder="response_schema">
+                            </div>
+                            <div class="mb-2">
+                                <label class="block text-xs font-medium text-gray-600 mb-1">JSON Schema</label>
+                                <textarea name="output_schema_json" rows="6" class="form-input font-mono text-sm"
+                                    placeholder='{"type":"object","properties":{"field":{"type":"string"}},"required":["field"]}'>${Utils.escapeHtml(prompt?.output_schema?.schema ? JSON.stringify(prompt.output_schema.schema, null, 2) : '')}</textarea>
+                            </div>
+                            <div class="flex items-center">
+                                <input type="checkbox" name="output_schema_strict" id="output_schema_strict" class="mr-2"
+                                    ${prompt?.output_schema?.strict !== false ? 'checked' : ''}>
+                                <label for="output_schema_strict" class="text-sm text-gray-600">Strict mode (enforce exact schema)</label>
+                            </div>
+                        </div>
+                        <p class="text-xs text-gray-500 mt-1">Define a JSON schema for structured LLM responses</p>
+                    </div>
+
                     <div class="flex justify-end gap-3 mt-6 pt-4 border-t">
                         <button type="button" id="cancel-btn" class="btn btn-secondary">Cancel</button>
                         <button type="submit" class="btn btn-primary">${isEdit ? 'Update' : 'Create'}</button>
@@ -199,6 +230,18 @@ const Prompts = (function() {
                         <div class="mt-4 pt-4 border-t">
                             <span class="text-sm text-gray-600">Description:</span>
                             <p class="mt-1">${Utils.escapeHtml(prompt.description)}</p>
+                        </div>
+                    ` : ''}
+                    ${prompt.output_schema ? `
+                        <div class="mt-4 pt-4 border-t">
+                            <span class="text-sm text-gray-600">Structured Output Schema:</span>
+                            <div class="mt-2 bg-gray-50 p-3 rounded-lg">
+                                <div class="flex items-center gap-4 mb-2">
+                                    <span class="font-medium">${Utils.escapeHtml(prompt.output_schema.name)}</span>
+                                    <span class="badge ${prompt.output_schema.strict ? 'badge-success' : 'badge-gray'}">${prompt.output_schema.strict ? 'Strict' : 'Non-strict'}</span>
+                                </div>
+                                <pre class="text-xs bg-white p-2 rounded border overflow-x-auto">${Utils.escapeHtml(JSON.stringify(prompt.output_schema.schema, null, 2))}</pre>
+                            </div>
                         </div>
                     ` : ''}
                 </div>
@@ -344,11 +387,9 @@ const Prompts = (function() {
             $('#version-modal').removeClass('hidden');
         });
 
-        // Close modal
-        $('#close-version-modal, #version-modal').on('click', function(e) {
-            if (e.target === this || e.target.id === 'close-version-modal') {
-                $('#version-modal').addClass('hidden');
-            }
+        // Close modal (only via close button, not backdrop click)
+        $('#close-version-modal').on('click', function() {
+            $('#version-modal').addClass('hidden');
         });
 
         // Revert to version
@@ -373,6 +414,15 @@ const Prompts = (function() {
     function bindFormEvents(editId) {
         $('#back-btn, #cancel-btn').on('click', () => render());
 
+        // Toggle output schema fields visibility
+        $('#enable-output-schema').on('change', function() {
+            if ($(this).is(':checked')) {
+                $('#output-schema-fields').removeClass('hidden');
+            } else {
+                $('#output-schema-fields').addClass('hidden');
+            }
+        });
+
         $('#prompt-form').on('submit', async function(e) {
             e.preventDefault();
             const formData = Utils.getFormData(this);
@@ -381,6 +431,31 @@ const Prompts = (function() {
             if (typeof formData.tags === 'string') {
                 formData.tags = formData.tags.split(',').map(t => t.trim()).filter(t => t);
             }
+
+            // Build output_schema if enabled
+            if ($('#enable-output-schema').is(':checked')) {
+                const schemaName = $('input[name="output_schema_name"]').val().trim();
+                const schemaJson = $('textarea[name="output_schema_json"]').val().trim();
+                const schemaStrict = $('input[name="output_schema_strict"]').is(':checked');
+
+                if (schemaName && schemaJson) {
+                    try {
+                        formData.output_schema = {
+                            name: schemaName,
+                            schema: JSON.parse(schemaJson),
+                            strict: schemaStrict
+                        };
+                    } catch (parseError) {
+                        Utils.showToast('Invalid JSON in output schema', 'error');
+                        return;
+                    }
+                }
+            }
+
+            // Remove temporary form fields from payload
+            delete formData.output_schema_name;
+            delete formData.output_schema_json;
+            delete formData.output_schema_strict;
 
             const $btn = $(this).find('button[type="submit"]');
             const originalText = $btn.text();

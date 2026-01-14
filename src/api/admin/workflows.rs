@@ -731,7 +731,6 @@ mod tests {
             step_type: WorkflowStepType::ChatCompletion(ChatCompletionStep {
                 model_id: "gpt-4".to_string(),
                 prompt_id: "prompt".to_string(),
-                user_message: "Hello".to_string(),
                 prompt_variables: std::collections::HashMap::new(),
                 temperature: None,
                 max_tokens: None,
@@ -760,7 +759,6 @@ mod tests {
             get_step_type_name(&WorkflowStepType::ChatCompletion(ChatCompletionStep {
                 model_id: "m".to_string(),
                 prompt_id: "p".to_string(),
-                user_message: "u".to_string(),
                 prompt_variables: std::collections::HashMap::new(),
                 temperature: None,
                 max_tokens: None,
